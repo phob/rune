@@ -13,16 +13,18 @@ struct Uniforms {
     radii: [f32; 4],
     clip: [f32; 4],
     fade: [u32; 4],
-    // format (0 BGRA, 1 video NV12, 2 full NV12), matrix (0 601, 1 709), transfer, alpha
+    // format (0 BGRA, 1 video NV12, 2 full NV12), matrix (0 601, 1 709), transfer (`transfer`), alpha
     color: [f32; 4],
     // Exact mapping flag, source dimensions, horizontal mirror flag.
     sampling: [f32; 4],
     // `Orient`: centred upright to centred buffer coordinates.
     orient: [f32; 4],
+    // The gain on linear colour: SDR white's level in an HDR window for an SDR picture, else 1.
+    light: [f32; 4],
 }
 
 const _: () = {
-    assert!(std::mem::size_of::<Uniforms>() == 144);
+    assert!(std::mem::size_of::<Uniforms>() == 160);
     assert!(std::mem::offset_of!(Uniforms, viewport) == 0);
     assert!(std::mem::offset_of!(Uniforms, node) == 16);
     assert!(std::mem::offset_of!(Uniforms, image) == 32);
@@ -32,7 +34,24 @@ const _: () = {
     assert!(std::mem::offset_of!(Uniforms, color) == 96);
     assert!(std::mem::offset_of!(Uniforms, sampling) == 112);
     assert!(std::mem::offset_of!(Uniforms, orient) == 128);
+    assert!(std::mem::offset_of!(Uniforms, light) == 144);
 };
+
+/// `video.wgsl`'s transfer code for a picture of `transfer` in a frame that blends in sRGB or not,
+/// and the gain on its linear colour: SDR pictures are drawn at `sdr_white` (an HDR window's SDR
+/// white, `SurfaceRenderer::set_sdr_white`), scRGB ones as they are.
+fn transfer(srgb_blend: bool, transfer: Transfer, sdr_white: f32) -> (f32, f32) {
+    match (srgb_blend, transfer) {
+        // Kept encoded, blended as encoded.
+        (true, Transfer::Srgb | Transfer::Bt709) => (2.0, 1.0),
+        // Linear light clipped to SDR's range and encoded.
+        (true, Transfer::ScRgbLinear) => (4.0, 1.0),
+        (false, Transfer::Srgb) => (0.0, sdr_white),
+        (false, Transfer::Bt709) => (1.0, sdr_white),
+        // As it is: highlights above 1 and wide gamut below 0 reach an scRGB target.
+        (false, Transfer::ScRgbLinear) => (3.0, 1.0),
+    }
+}
 
 /// Bind groups a draw keeps for textures it may show again (a video decoder's ring).
 const KEPT_BINDS: usize = 8;
@@ -88,6 +107,7 @@ impl SurfaceRenderer {
                 && (image[3] - upright[1] as f32).abs() < 0.001
                 && (image[0] - image[0].round()).abs() < 0.001
                 && (image[1] - image[1].round()).abs() < 0.001;
+            let (code, gain) = transfer(self.srgb_blend, f.color.transfer, self.sdr_white);
             let u = Uniforms {
                 viewport: [viewport.0 as f32, viewport.1 as f32, 0.0, 0.0],
                 node: d.rect,
@@ -102,11 +122,12 @@ impl SurfaceRenderer {
                         Format::Nv12Full => 2.0,
                     },
                     if f.color.matrix == Matrix::Bt709 { 1.0 } else { 0.0 },
-                    if self.srgb_blend { 2.0 } else if f.color.transfer == Transfer::Srgb { 0.0 } else { 1.0 },
+                    code,
                     d.opacity,
                 ],
                 sampling: [if exact { 1.0 } else { 0.0 }, f.size[0] as f32, f.size[1] as f32, if mirrored { 1.0 } else { 0.0 }],
                 orient: f.orient.0.map(f32::from),
+                light: [gain, 0.0, 0.0, 0.0],
             };
             // The same draw with a new picture keeps its uniform buffer, and its bind group too
             // when the picture is in textures it bound before.
@@ -493,6 +514,22 @@ fn bind_group(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, sampler: &w
     })
 }
 
+#[cfg(test)]
+mod transfer_tests {
+    use super::*;
+
+    #[test]
+    fn sdr_pictures_take_sdr_white_and_scrgb_ones_pass_through() {
+        // An HDR window (linear blend) at 240 nits: SDR video at 3x, scRGB video untouched.
+        assert_eq!(transfer(false, Transfer::Srgb, 3.0), (0.0, 3.0));
+        assert_eq!(transfer(false, Transfer::Bt709, 3.0), (1.0, 3.0));
+        assert_eq!(transfer(false, Transfer::ScRgbLinear, 3.0), (3.0, 1.0));
+        // An sRGB-blended (SDR) window never scales: its SDR white is 1.
+        assert_eq!(transfer(true, Transfer::Srgb, 1.0), (2.0, 1.0));
+        assert_eq!(transfer(true, Transfer::ScRgbLinear, 1.0), (4.0, 1.0));
+    }
+}
+
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod abi_tests {
     use super::Uniforms;
@@ -527,6 +564,7 @@ mod abi_tests {
             ("color", std::mem::offset_of!(Uniforms, color)),
             ("sampling", std::mem::offset_of!(Uniforms, sampling)),
             ("orient", std::mem::offset_of!(Uniforms, orient)),
+            ("light", std::mem::offset_of!(Uniforms, light)),
         ];
         assert_eq!(members.len(), expected.len());
         for (member, &(field, offset)) in members.iter().zip(expected) {

@@ -117,6 +117,13 @@ impl<S: 'static> Frame<'_, S> {
         self.ui.srgb_blend()
     }
 
+    /// The light `target` holds (`App::hdr`): standard range, or an HDR window's scRGB, where an
+    /// effect's SDR colours are drawn at `output.sdr_white()` (as `ui` draws its own) and
+    /// scRGB ones as they are.
+    pub fn output(&self) -> crate::render::Output {
+        self.ui.output()
+    }
+
     /// Packed explicit scroll-fade stops for this frame (`FxRenderer::set_fade_stops` in rune-fx
     /// or `clip_alpha_stops` in `CLIP_WGSL`).
     pub fn fade_stops(&self) -> [f32; 2] {

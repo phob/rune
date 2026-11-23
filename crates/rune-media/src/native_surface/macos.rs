@@ -44,13 +44,19 @@ impl PixelBuffer {
         )?;
         // SAFETY: `CVPixelBufferCreateWithIOSurface` succeeded and transferred ownership of a retained `CVPixelBuffer` in `out`.
         let buffer = Self(unsafe { CFRetained::from_raw(NonNull::new(out).ok_or("null pixel buffer")?) });
-        buffer.set_color(color);
+        buffer.set_color(color)?;
         buffer.info()?;
         Ok(buffer)
     }
-    fn set_color(&self, color: ColorInfo) {
+    /// Attaches `color`; refuses linear scRGB, which no 8-bit buffer here holds.
+    fn set_color(&self, color: ColorInfo) -> Result<(), String> {
         // SAFETY: `self.0` is a live owned `CVPixelBuffer` and the CoreVideo attachment keys and values are static `CFString` constants.
         unsafe {
+            let transfer = match color.transfer {
+                Transfer::Srgb => kCVImageBufferTransferFunction_sRGB,
+                Transfer::Bt709 => kCVImageBufferTransferFunction_ITU_R_709_2,
+                Transfer::ScRgbLinear => return Err("linear scRGB frames need an FP16 buffer, which macOS native surfaces don't take yet".into()),
+            };
             self.0.set_attachment(
                 kCVImageBufferYCbCrMatrixKey,
                 match color.matrix {
@@ -60,16 +66,9 @@ impl PixelBuffer {
                 .as_ref(),
                 CVAttachmentMode::ShouldPropagate,
             );
-            self.0.set_attachment(
-                kCVImageBufferTransferFunctionKey,
-                match color.transfer {
-                    Transfer::Srgb => kCVImageBufferTransferFunction_sRGB,
-                    Transfer::Bt709 => kCVImageBufferTransferFunction_ITU_R_709_2,
-                }
-                .as_ref(),
-                CVAttachmentMode::ShouldPropagate,
-            );
+            self.0.set_attachment(kCVImageBufferTransferFunctionKey, transfer.as_ref(), CVAttachmentMode::ShouldPropagate);
         }
+        Ok(())
     }
     #[allow(non_upper_case_globals)] // CoreVideo's public fourcc names.
     pub(crate) fn info(&self) -> Result<([u32; 2], Format, ColorInfo), String> {
@@ -198,7 +197,7 @@ impl PixelBuffer {
             }
             CVPixelBufferUnlockBaseAddress(&buffer.0, CVPixelBufferLockFlags(0));
         }
-        buffer.set_color(frame.color);
+        buffer.set_color(frame.color)?;
         Ok(buffer)
     }
 }

@@ -12,7 +12,7 @@ const TAPS: usize = shader_consts::LAYER_BLUR_TAPS; // centre + ceil(3 * MAX_SIG
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub(super) struct Uniforms {
     pub(super) meta: [f32; 4], // used width, height, axis (0 horizontal), tap count
-    pub(super) mapping: [f32; 4], // output->input scale xy
+    pub(super) mapping: [f32; 4], // output->input scale xy, plus-lighter's colour ceiling z
     pub(super) taps: [[f32; 4]; TAPS], // offset, weight; vec4 stride matches WGSL uniform arrays
 }
 
@@ -36,7 +36,9 @@ pub(super) struct Scratch {
     work: Option<(wgpu::Texture, wgpu::TextureView, wgpu::BindGroup)>,
     uniforms: [wgpu::Buffer; 4],
     bindings: [wgpu::BindGroup; 4],
-    additive: bool,
+    /// Plus-lighter's saturation: the level each source texel's colour is clamped to before it's
+    /// filtered (SDR white's, `Renderer::set_output`), or None for an ordinary blur.
+    additive: Option<f32>,
     mode: Mode,
     /// Set by `forget_uniforms`: the next `prepare` writes even when nothing changed.
     stale: bool,
@@ -146,7 +148,7 @@ impl Pipeline {
                 wgpu::BindGroupEntry { binding: 2, resource: uniforms[axis].as_entire_binding() },
             ],
         }));
-        Scratch { texture, view, uniforms, bindings, work: None, additive: false, mode: Mode::Unprepared,
+        Scratch { texture, view, uniforms, bindings, work: None, additive: None, mode: Mode::Unprepared,
             stale: false, #[cfg(test)] uniform_writes: 0 }
     }
 
@@ -176,8 +178,8 @@ impl Pipeline {
             pass.set_viewport(0.0, 0.0, at[0], at[1], 0.0, 1.0);
             let pipeline = match (reduced.is_some(), axis) {
                 (true, 3) => 4,
-                (true, 0) => 2 + usize::from(scratch.additive),
-                _ => usize::from(axis == 0 && scratch.additive),
+                (true, 0) => 2 + usize::from(scratch.additive.is_some()),
+                _ => usize::from(axis == 0 && scratch.additive.is_some()),
             };
             pass.set_pipeline(&self.pipelines[pipeline]);
             pass.set_bind_group(0, bind, &[]);
@@ -196,7 +198,7 @@ impl Scratch {
     /// Makes the next `prepare` write the uniforms again.
     pub fn forget_uniforms(&mut self) { self.stale = true; }
 
-    pub fn prepare(&mut self, device: &wgpu::Device, pipeline: &Pipeline, staging: &rune_staging::Staging, size: [f32; 2], sigma: f32, additive: bool) -> bool {
+    pub fn prepare(&mut self, device: &wgpu::Device, pipeline: &Pipeline, staging: &rune_staging::Staging, size: [f32; 2], sigma: f32, additive: Option<f32>) -> bool {
         let sigma = sigma.clamp(0.001, MAX_SIGMA);
         if !self.stale && self.additive == additive && self.mode.matches(size, sigma) { return false; }
         let reduction = (sigma / 3.0).clamp(1.0, 8.0);
@@ -244,10 +246,11 @@ impl Scratch {
             let variance = (scale[axis] * scale[axis] - 1.0) * 0.25;
             let mut u = kernel((sigma * sigma - variance).sqrt() / scale[axis]);
             u.meta = [input[0], input[1], mode as f32, u.meta[3]];
+            let ceiling = additive.unwrap_or(1.0);
             u.mapping = match mode {
-                shader_consts::LAYER_BLUR_MODE_PREFILTER => [scale[0], scale[1], 0.0, 0.0],
-                shader_consts::LAYER_BLUR_MODE_RECONSTRUCT => [1.0 / scale[0], 1.0 / scale[1], 0.0, 0.0],
-                _ => [1.0, 1.0, 0.0, 0.0],
+                shader_consts::LAYER_BLUR_MODE_PREFILTER => [scale[0], scale[1], ceiling, 0.0],
+                shader_consts::LAYER_BLUR_MODE_RECONSTRUCT => [1.0 / scale[0], 1.0 / scale[1], ceiling, 0.0],
+                _ => [1.0, 1.0, ceiling, 0.0],
             };
             staging.write_buffer(&self.uniforms[pass], 0, bytemuck::bytes_of(&u));
             #[cfg(test)] { self.uniform_writes += 1; }

@@ -17,6 +17,7 @@ mod cloak;
 pub(crate) mod dark_mode;
 pub(crate) mod dcomp_handover;
 pub(crate) mod dib;
+pub(crate) mod display_light;
 mod dpi_drag;
 pub(crate) mod drop_target;
 mod frame;

@@ -17,6 +17,7 @@ mod layers;
 mod metallib;
 mod offscreen;
 mod outlines;
+mod output;
 mod pass;
 mod pipelines;
 // The kept frame it checks exists only where partial frames do (`damaged`).
@@ -115,6 +116,8 @@ pub use layers::LayerStats;
 pub use offscreen::OFFSCREEN_FORMAT;
 pub use offscreen::Offscreen;
 pub use offscreen::write_png;
+pub use output::Output;
+pub use output::SCRGB_NITS;
 pub use rune_core::Blend;
 pub use warmup::warm_gpu;
 pub use warmup::warm_gpu_cache;
@@ -309,6 +312,9 @@ pub struct Renderer {
     spring_instances: usize,
     layers: layers::Layers,
     srgb_blend: bool,
+    /// The light the frame's target holds (`set_output`): SDR colours are drawn at its SDR
+    /// white, and the clear colour with them.
+    output: Output,
     fade_stops: [f32; 2],
     /// Effect slots of the uploaded instances, by index.
     effects: Vec<(u32, Instance)>,
@@ -353,6 +359,18 @@ impl Renderer {
             s.set_srgb_blend(enabled);
         }
     }
+
+    /// The light the frame's target holds: SDR colours (every kind but a layer's composite) are
+    /// drawn at `output.sdr_white()`, once, as they're shaded, and the clear colour with them;
+    /// native surfaces of SDR video too, while HDR ones (scRGB) go through as they are. Set it
+    /// with the target's format (`set_format`): an scRGB output draws into `Rgba16Float`
+    /// without sRGB blending.
+    pub fn set_output(&mut self, output: Output) {
+        self.output = output;
+    }
+
+    /// The light the frame's target holds (`set_output`).
+    pub fn output(&self) -> Output { self.output }
 
     pub fn set_fade_stops(&mut self, stops: [f32; 2]) {
         self.fade_stops = stops;
@@ -424,7 +442,7 @@ impl Renderer {
         hook: &mut EffectBackdropHook<'_>,
     ) {
         self.encode_layers_with_backdrop(encoder, hook);
-        let clear = wgpu::Color { r: clear[0] as f64, g: clear[1] as f64, b: clear[2] as f64, a: clear[3] as f64 };
+        let clear = self.output.clear(clear);
         self.draw_target_range_with(encoder, view, self.format, wgpu::LoadOp::Clear(clear), 0..self.count, hook);
     }
 
@@ -598,7 +616,7 @@ impl Renderer {
     }
 
     pub fn draw_timed(&self, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView, clear: [f32; 4], timestamps: Option<wgpu::RenderPassTimestampWrites<'_>>) {
-        let clear = wgpu::Color { r: clear[0] as f64, g: clear[1] as f64, b: clear[2] as f64, a: clear[3] as f64 };
+        let clear = self.output.clear(clear);
         self.draw_load(encoder, view, wgpu::LoadOp::Clear(clear), timestamps);
     }
 

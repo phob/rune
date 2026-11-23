@@ -33,10 +33,12 @@ fn sample_zero(p: vec2<f32>) -> vec4<f32> {
     return textureSampleLevel(source, linear, uv, 0.0) * edge.x * edge.y;
 }
 
+// Plus-lighter saturates colour at SDR white's level (`u.mapping.z`: 1, or an HDR window's
+// scRGB SDR white) and alpha at 1.
 fn bounded_load(p: vec2<i32>) -> vec4<f32> {
     if (any(p < vec2(0)) || any(p >= vec2<i32>(u.config.xy))) { return vec4(0.0); }
     let color = textureLoad(source, p, 0);
-    return select(color, clamp(color, vec4(0.0), vec4(1.0)), ADDITIVE);
+    return select(color, clamp(color, vec4(0.0), vec4(vec3(u.mapping.z), 1.0)), ADDITIVE);
 }
 
 @fragment

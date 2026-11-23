@@ -26,6 +26,8 @@ pub(in crate::window) mod create;
 pub(in crate::window) mod draw;
 pub(in crate::window) mod events;
 pub(in crate::window) mod lifecycle;
+#[cfg(target_os = "windows")]
+mod output;
 mod render;
 pub(in crate::window) mod shell_requests;
 pub(in crate::window) mod stepping;
@@ -85,6 +87,9 @@ pub(in crate::window) struct Host {
     /// `App::float_on_open`: each window maps at a fixed size, then takes its own limits.
     #[cfg_attr(not(all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android"))), allow(dead_code))]
     pub(in crate::window) float_on_open: bool,
+    /// `App::hdr`, with `RUNE_HDR`'s override: the output the window's display asks for.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    pub(in crate::window) hdr: crate::Hdr,
     /// `App::open_inactive`: the first open leaves focus where it is.
     pub(in crate::window) open_inactive: bool,
     /// `App::maximized`, `App::full_screen`.
@@ -199,6 +204,7 @@ struct HostInit {
     open_at_start: bool,
     fit_height: bool,
     float_on_open: bool,
+    hdr: crate::Hdr,
     open_inactive: bool,
     open_as: crate::windows::OpenAs,
     shortcuts: crate::shortcuts::Guard,
@@ -233,7 +239,7 @@ impl Host {
         let (open, keep_running, release_gpu, fit_height, float_on_open) = (
             app.open, app.keep_running, app.release_gpu, app.fit_content_height, app.float_on_open,
         );
-        let (open_inactive, open_as, chrome, titlebar) = (app.open_inactive, app.open_as, app.chrome, app.titlebar);
+        let (open_inactive, open_as, chrome, titlebar, hdr) = (app.open_inactive, app.open_as, app.chrome, app.titlebar, app.hdr.resolved());
         let (on_close, on_rest, on_reopen, on_quit, turn_scope) = (app.on_close, app.on_rest, app.on_reopen, app.on_quit, app.turn_scope);
         let comp = app.compositor.take();
         let (layout_seed, keep_layout) = (app.layout_seed.take(), app.keep_layout.take());
@@ -274,6 +280,7 @@ impl Host {
             open_at_start: open,
             fit_height,
             float_on_open,
+            hdr,
             open_inactive,
             open_as,
             shortcuts,
@@ -312,6 +319,7 @@ impl Host {
             open_at_start,
             fit_height,
             float_on_open,
+            hdr,
             open_inactive,
             open_as,
             shortcuts,
@@ -400,6 +408,7 @@ impl Host {
             release_gpu,
             open_at_start,
             float_on_open,
+            hdr,
             open_inactive,
             open_as,
             shared,

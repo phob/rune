@@ -1,6 +1,6 @@
 // Written by `cargo run -p rune --example regen_dxbc` on Windows with uber.fs-k0/k1/k2.dxbc; nothing else writes them.
 /// BLAKE3 of the WGSL each pinned fragment was compiled from (render/variant.rs `pinned_wgsl`, `PINNED` order).
-pub(super) const UBER_DXBC_PINNED_WGSL_BLAKE3: [&str; 3] = ["9eca875009982a625c9651f1607ea8f1f8555544ebb52540f4d1110cd47593d0", "5292e65d1b1ce7c3aef2fcc4f1b7fb8cf0b5a5f4126bbc174c5f75b89f60f24f", "fe117a1b204692a32edd0135bb780afe2d34c175f3fd6afee73f4c4486fc8ad3"];
+pub(super) const UBER_DXBC_PINNED_WGSL_BLAKE3: [&str; 3] = ["e3b6ee788ba2171bb5935b4b0055ddcf6dd8cb423ba9c00567eca8a19f58a881", "aa33f10538f1faf06db25c23dce198b287d22d7e18e3904cd2efb2ec885351f1", "329ba28651b49445901be0ac5469ec0471a8862ba9eea67af6424c6a52a14a86"];
 /// BLAKE3 of each pinned fragment's file, and of the `uber.vs.dxbc` it was compiled beside.
-pub(super) const UBER_DXBC_PINNED_FS_BLAKE3: [&str; 3] = ["eec4c3120cce80805d742a40942b685dada3fd3454b3a56f44c379059f9e8d77", "d65504b8e6fad69bfc30cd9b64a7d7c8025e747f74c4603257d971fa9b59a677", "722a6a3745d70794edbd12fa2490543f46db088edb25c1ea14e0097272c5f0d8"];
-pub(super) const UBER_DXBC_PINNED_VS_BLAKE3: &str = "e6a25a34357594d88ffdbe2f8f6e242ee9b42aa46005cc71d067b4891bbdd42c";
+pub(super) const UBER_DXBC_PINNED_FS_BLAKE3: [&str; 3] = ["92f3f945d31379426a275be28bc0a44a9087d90352d0a3f47b2c4c137e951d13", "59be8c73517aecc0db3e3e197729d60c3edc1d0e826267636e7519e39b6a3255", "892b07f44203f1bc0ebacef3281855750415fe6afa97ed6a92678a151ebab69d"];
+pub(super) const UBER_DXBC_PINNED_VS_BLAKE3: &str = "d8e72969e249aaa107e3902a29c2fc6edb8c3092c71d1c71a4e0a547fda0ce3c";

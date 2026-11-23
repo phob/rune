@@ -21,7 +21,7 @@ impl RuntimeCore {
         ordered: bool,
     ) -> (bool, Option<std::num::NonZeroU64>) {
         stall.end_named("an `update` closure");
-        let stale = changed || one.frame_work() || one.window_frame.is_some() || one.srgb_blend.is_some_and(|b| b != self.paint.srgb_blend()) || one.font_smoothing.is_some_and(|m| m != self.text.font_smoothing())
+        let stale = changed || one.frame_work() || one.window_frame.is_some() || one.srgb_blend.is_some_and(|b| b != self.paint.srgb_requested()) || one.font_smoothing.is_some_and(|m| m != self.text.font_smoothing())
             || self.changes_families(&one)
             || (one.blur && self.kbd.focus.path().is_some());
         let minimize = if ordered {

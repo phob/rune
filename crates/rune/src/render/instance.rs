@@ -205,15 +205,18 @@ pub(crate) struct Globals {
     pub viewport: [f32; 2],
     /// Split presentation timestamp `[t_hi, t_lo]` for GPU springs (`springs.wgsl`).
     pub pad: [f32; 2],
-    /// `[srgb_blend, byte_source, 0.0, 0.0]`.
+    /// `[srgb_blend, byte_source, fade_stops[0], fade_stops[1]]`.
     pub flags: [f32; 4],
+    /// `[sdr_white, 0.0, 0.0, 0.0]`: the level SDR colours are drawn at (`Renderer::set_output`).
+    pub light: [f32; 4],
 }
 
 const _: () = {
-    assert!(size_of::<Globals>() == 32);
+    assert!(size_of::<Globals>() == 48);
     assert!(offset_of!(Globals, viewport) == 0);
     assert!(offset_of!(Globals, pad) == 8);
     assert!(offset_of!(Globals, flags) == 16);
+    assert!(offset_of!(Globals, light) == 32);
 };
 
 /// One instance, in device pixels.

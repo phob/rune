@@ -94,6 +94,7 @@ fn wgsl_uniform_and_storage_layouts_match_rust() {
         ("viewport", offset_of!(Globals, viewport)),
         ("pad", offset_of!(Globals, pad)),
         ("flags", offset_of!(Globals, flags)),
+        ("light", offset_of!(Globals, light)),
     ];
     let level_fields: &[(&str, usize)] = &[
         ("w", offset_of!(backdrop_blur::Level, w)),

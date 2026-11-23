@@ -97,6 +97,7 @@ pub struct App<S: 'static> {
     #[cfg(target_arch = "wasm32")]
     pub(crate) late_font_urls: Vec<String>,
     pub(crate) float_on_open: bool,
+    pub(crate) hdr: crate::Hdr,
     /// `App::open_inactive`: the first open leaves focus where it is.
     pub(crate) open_inactive: bool,
     /// `App::maximized`, `App::full_screen`: how the window's first open shows it.
@@ -151,6 +152,7 @@ impl<S: 'static> App<S> {
             #[cfg(target_arch = "wasm32")]
             late_font_urls: Vec::new(),
             float_on_open: false,
+            hdr: crate::Hdr::Off,
             open_inactive: false,
             open_as: crate::windows::OpenAs::Normal,
             runtime: RuntimeConfig::default(),

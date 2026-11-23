@@ -1,20 +1,25 @@
 //! D3D shared textures from another process or API, read on Rune's D3D12 device.
 //!
-//! The producer renders BGRA8 frames into textures it shares by name (a D3D11 texture made with
+//! The producer renders BGRA8 frames, or linear scRGB ones in FP16 (`SharedFormat`, an HDR video
+//! renderer's), into textures it shares by name (a D3D11 texture made with
 //! `D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_NTHANDLE`, then
 //! `IDXGIResource1::CreateSharedHandle`, or a D3D12 one with `CreateSharedHandle`), on the adapter
 //! from [`adapter_luid`]. Rune copies a pushed frame into a texture of its own the first time it
-//! draws it, so the shared texture is read once, in one short submission. When the frame names a
-//! release fence, Rune signals it to the frame's value on its GPU queue after that copy; the
-//! producer may write the texture again once the fence reaches the value. A frame replaced before
-//! it was drawn is never read and signals nothing: the next frame's higher value covers it.
+//! draws it, so the shared texture is read once, in one short submission, and given back at once
+//! whatever the window's pacing (sampling it in place would hold it until the frame that draws it
+//! is done, and every later one that draws it again). When the frame names a ready fence, Rune's
+//! GPU queue waits for it to reach the frame's value before that copy, so a producer can push a
+//! frame its GPU is still writing. When it names a release fence, Rune signals it to the frame's
+//! value on its GPU queue after the copy; the producer may write the texture again once the fence
+//! reaches the value. A frame replaced before it was drawn is never read and signals nothing: the
+//! next frame's higher value covers it.
 
 #![allow(unsafe_code)]
 
 use super::*;
 use ::windows::Win32::Foundation::{CloseHandle, GENERIC_ALL, HANDLE};
 use ::windows::Win32::Graphics::Direct3D12::{D3D12_RESOURCE_DIMENSION_TEXTURE2D, ID3D12Device, ID3D12Fence, ID3D12Resource};
-use ::windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
+use ::windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R16G16B16A16_FLOAT};
 use ::windows::core::{HSTRING, Interface};
 use std::sync::atomic::{AtomicU64, Ordering};
 use wgpu::hal::api::Dx12;
@@ -23,12 +28,51 @@ use wgpu::hal::api::Dx12;
 /// textures per stream, and one fence.
 const OPENED: usize = 16;
 
-/// A frame in a named D3D shared texture, BGRA8 (`DXGI_FORMAT_B8G8R8A8_UNORM`), complete before
-/// it is pushed. Build one with [`named`](Self::named).
+/// A shared texture's pixel format.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SharedFormat {
+    /// `DXGI_FORMAT_B8G8R8A8_UNORM`: sRGB-encoded standard range.
+    #[default]
+    Bgra8Unorm,
+    /// `DXGI_FORMAT_R16G16B16A16_FLOAT`: linear scRGB (`Transfer::ScRgbLinear`), 1.0 at 80 nits,
+    /// with highlights above 1 and wide-gamut colours below 0, as an HDR video renderer exports
+    /// frames (libmpv's `gpu-api=d3d11` with an scRGB target).
+    Rgba16Float,
+}
+
+impl SharedFormat {
+    fn dxgi(self) -> DXGI_FORMAT {
+        match self {
+            SharedFormat::Bgra8Unorm => DXGI_FORMAT_B8G8R8A8_UNORM,
+            SharedFormat::Rgba16Float => DXGI_FORMAT_R16G16B16A16_FLOAT,
+        }
+    }
+
+    fn texture_format(self) -> wgpu::TextureFormat {
+        match self {
+            SharedFormat::Bgra8Unorm => wgpu::TextureFormat::Bgra8Unorm,
+            SharedFormat::Rgba16Float => wgpu::TextureFormat::Rgba16Float,
+        }
+    }
+
+    /// How its values encode light.
+    pub(crate) fn transfer(self) -> Transfer {
+        match self {
+            SharedFormat::Bgra8Unorm => Transfer::Srgb,
+            SharedFormat::Rgba16Float => Transfer::ScRgbLinear,
+        }
+    }
+}
+
+/// A frame in a named D3D shared texture, BGRA8 unless [`format`](Self::format) says otherwise,
+/// complete before it is pushed or once its [`ready_fence`](Self::ready_fence) says so. Build one
+/// with [`named`](Self::named).
 #[derive(Clone, Debug)]
 pub struct SharedTexture {
     name: String,
     size: [u32; 2],
+    format: SharedFormat,
+    ready: Option<(String, u64)>,
     release: Option<(String, u64)>,
 }
 
@@ -42,7 +86,32 @@ impl SharedTexture {
     /// // surface.push_shared(frame, 42)?;
     /// ```
     pub fn named(name: impl Into<String>, width: u32, height: u32) -> Self {
-        Self { name: name.into(), size: [width, height], release: None }
+        Self { name: name.into(), size: [width, height], format: SharedFormat::Bgra8Unorm, ready: None, release: None }
+    }
+
+    /// The texture's pixel format, `SharedFormat::Bgra8Unorm` unless set. An `Rgba16Float`
+    /// frame is scRGB:
+    ///
+    /// ```
+    /// use rune_media::native_surface::windows::{SharedFormat, SharedTexture};
+    /// let frame = SharedTexture::named("my-player-frame-0", 3840, 2160)
+    ///     .format(SharedFormat::Rgba16Float)
+    ///     .ready_fence("my-player-written", 7)
+    ///     .release_fence("my-player-read", 7);
+    /// # let _ = frame;
+    /// ```
+    pub fn format(mut self, format: SharedFormat) -> Self {
+        self.format = format;
+        self
+    }
+
+    /// Wait, on Rune's GPU queue, for the fence shared under `name` (`ID3D11Fence` or
+    /// `ID3D12Fence`, made with a shared flag and shared by name) to reach `value` before reading
+    /// the texture: the producer signals it once its GPU has written the frame, so the frame can
+    /// be pushed without the producer's CPU waiting for it. Values must grow from frame to frame.
+    pub fn ready_fence(mut self, name: impl Into<String>, value: u64) -> Self {
+        self.ready = Some((name.into(), value));
+        self
     }
 
     /// Signal the fence shared under `name` (`ID3D11Fence` or `ID3D12Fence`, made with a shared
@@ -55,6 +124,10 @@ impl SharedTexture {
 
     pub(crate) fn size(&self) -> [u32; 2] {
         self.size
+    }
+
+    pub(crate) fn shared_format(&self) -> SharedFormat {
+        self.format
     }
 }
 
@@ -181,12 +254,20 @@ impl Importer {
         Ok(textures)
     }
 
-    /// Copies `frame` into a texture of Rune's own, then signals its release fence.
+    /// Copies `frame` into a texture of Rune's own, once its ready fence (if it names one) says
+    /// it's written, then signals its release fence.
     pub fn import(&mut self, queue: &wgpu::Queue, frame: &SharedTexture) -> Result<[wgpu::Texture; 2], String> {
         let fence = match &frame.release {
             Some((name, value)) => Some((self.fence(name)?, *value)),
             None => None,
         };
+        if let Some((name, value)) = &frame.ready {
+            let ready = self.fence(name)?;
+            // SAFETY: the raw queue only gets a wait, ordered before the copy's submission below.
+            let hal = unsafe { queue.as_hal::<Dx12>() }.ok_or("shared textures need wgpu's D3D12 backend")?;
+            // SAFETY: as above; `ready` is a live shared fence opened on this device.
+            unsafe { hal.as_raw().Wait(&ready, *value) }.map_err(|e| format!("wait for the producer: {e}"))?;
+        }
         let copied = self.copy(queue, frame);
         if let Some((fence, value)) = fence {
             // After the copy's submission (or at once if it failed), so the producer never waits
@@ -206,11 +287,12 @@ impl Importer {
 
     fn copy(&mut self, queue: &wgpu::Queue, frame: &SharedTexture) -> Result<[wgpu::Texture; 2], String> {
         let [width, height] = frame.size;
-        let resource = self.texture(&frame.name, width, height)?;
-        let mut desc = pipeline::descriptor(width, height, wgpu::TextureFormat::Bgra8Unorm);
+        let resource = self.texture(&frame.name, width, height, frame.format)?;
+        let format = frame.format.texture_format();
+        let mut desc = pipeline::descriptor(width, height, format);
         desc.usage = wgpu::TextureUsages::COPY_SRC;
         // SAFETY: `resource` was opened on this device and checked to be a 2D, single-mip,
-        // single-sample BGRA8 texture of `desc`'s size.
+        // single-sample texture of `desc`'s format and size.
         let hal = unsafe {
             wgpu::hal::dx12::Device::texture_from_raw(
                 resource,
@@ -225,7 +307,7 @@ impl Importer {
         // backend calls PRESENT.
         // SAFETY: the resource was checked against `desc` above and belongs to this device.
         let source = unsafe { self.device.create_texture_from_hal::<Dx12>(hal, &desc, wgpu::TextureUses::PRESENT) };
-        let mut desc = pipeline::descriptor(width, height, wgpu::TextureFormat::Bgra8Unorm);
+        let mut desc = pipeline::descriptor(width, height, format);
         desc.usage |= wgpu::TextureUsages::COPY_DST;
         let owned = self.device.create_texture(&desc);
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("shared texture copy") });
@@ -238,7 +320,7 @@ impl Importer {
         Ok([owned.clone(), owned])
     }
 
-    fn texture(&mut self, name: &str, width: u32, height: u32) -> Result<ID3D12Resource, String> {
+    fn texture(&mut self, name: &str, width: u32, height: u32, format: SharedFormat) -> Result<ID3D12Resource, String> {
         if let Some((_, resource)) = self.textures.iter().find(|(n, _)| n == name) {
             return Ok(resource.clone());
         }
@@ -251,9 +333,9 @@ impl Importer {
             || desc.DepthOrArraySize != 1
             || desc.MipLevels != 1
             || desc.SampleDesc.Count != 1
-            || desc.Format != DXGI_FORMAT_B8G8R8A8_UNORM
+            || desc.Format != format.dxgi()
         {
-            return Err(format!("shared texture {name:?} isn't a {width}x{height} BGRA8 texture"));
+            return Err(format!("shared texture {name:?} isn't a {width}x{height} {format:?} texture"));
         }
         remember(&mut self.textures, name, resource.clone());
         Ok(resource)

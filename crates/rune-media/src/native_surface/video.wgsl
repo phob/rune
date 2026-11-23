@@ -1,6 +1,7 @@
 struct Uniforms {
     viewport: vec4<f32>, node: vec4<f32>, image: vec4<f32>, radii: vec4<f32>,
     clip: vec4<f32>, fade: vec4<u32>, color: vec4<f32>, sampling: vec4<f32>, orient: vec4<f32>,
+    light: vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(0) @binding(1) var plane0: texture_2d<f32>;
@@ -13,11 +14,18 @@ struct Out { @builtin(position) pos: vec4<f32> };
     let local = p - u.viewport.zw;
     return Out(vec4<f32>(local.x / u.viewport.x * 2.0 - 1.0, 1.0 - local.y / u.viewport.y * 2.0, 0.0, 1.0));
 }
+// The picture's colour as the frame blends it, by `u.color.z`: 0 sRGB and 1 BT.709 decoded to
+// linear, 2 kept encoded (a frame that blends in sRGB), 3 linear scRGB as it is, unclamped (its
+// highlights above 1 and wide gamut below 0 reach an HDR window's scRGB target), 4 linear scRGB
+// clipped to SDR's range and encoded (a frame that blends in sRGB). Then `u.light.x`: the level an
+// SDR picture is drawn at in an HDR window.
 fn linear(v: vec3<f32>) -> vec3<f32> {
+    if u.color.z > 2.5 && u.color.z < 3.5 { return v * u.light.x; }
     let x = clamp(v, vec3<f32>(0.0), vec3<f32>(1.0));
+    if u.color.z > 3.5 { return select(1.055 * pow(x, vec3<f32>(1.0 / 2.4)) - 0.055, x * 12.92, x <= vec3<f32>(0.0031308)); }
     if u.color.z > 1.5 { return x; }
-    if u.color.z < 0.5 { return select(pow((x + 0.055) / 1.055, vec3<f32>(2.4)), x / 12.92, x <= vec3<f32>(0.04045)); }
-    return select(pow((x + 0.099) / 1.099, vec3<f32>(1.0 / 0.45)), x / 4.5, x < vec3<f32>(0.081));
+    if u.color.z < 0.5 { return select(pow((x + 0.055) / 1.055, vec3<f32>(2.4)), x / 12.92, x <= vec3<f32>(0.04045)) * u.light.x; }
+    return select(pow((x + 0.099) / 1.099, vec3<f32>(1.0 / 0.45)), x / 4.5, x < vec3<f32>(0.081)) * u.light.x;
 }
 fn convert(a: vec4<f32>, uv: vec2<f32>) -> vec4<f32> {
     if u.color.x < 0.5 { return vec4<f32>(linear(a.rgb) * a.a, a.a); }

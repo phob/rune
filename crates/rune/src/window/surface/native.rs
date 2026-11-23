@@ -96,6 +96,8 @@ pub(in crate::window) struct Native {
     pub(in crate::window) video_layers: crate::window::win32::video_layer::VideoLayers,
     /// Revokes the window's OLE drop target and prunes its registry entry when the window goes.
     pub(in crate::window) drop_target: Option<crate::platform::win32::drop_target::DropTarget>,
+    /// The display it's on, followed for `App::hdr` (`display`).
+    pub(in crate::window) display: crate::window::win32::display::DisplayWatch,
 }
 
 /// When a window's UI Automation adapter is made: with the window (a screen reader is running),

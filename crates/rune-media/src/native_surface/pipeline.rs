@@ -120,6 +120,8 @@ pub struct SurfaceRenderer {
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     punch_building: Option<std::sync::mpsc::Receiver<wgpu::RenderPipeline>>,
     srgb_blend: bool,
+    /// The level SDR pictures are drawn at (`set_sdr_white`).
+    sdr_white: f32,
     /// The owning `Renderer`'s uploads, when it has one; queue writes otherwise.
     staging: Option<rune_staging::Staging>,
     #[cfg(target_os = "macos")]
@@ -246,6 +248,7 @@ impl SurfaceRenderer {
             punch: None,
             punch_building: None,
             srgb_blend: false,
+            sdr_white: 1.0,
             staging: None,
             #[cfg(target_os = "macos")]
             importer: None,
@@ -283,6 +286,12 @@ impl SurfaceRenderer {
 
     pub fn set_srgb_blend(&mut self, enabled: bool) {
         self.srgb_blend = enabled;
+    }
+
+    /// The level SDR pictures (sRGB and BT.709) are drawn at: an HDR window's SDR white in scRGB
+    /// (`rune::render::Output`), 1 in standard range. scRGB pictures are drawn as they are.
+    pub fn set_sdr_white(&mut self, level: f32) {
+        self.sdr_white = level;
     }
 
     #[doc(hidden)]

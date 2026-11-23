@@ -114,6 +114,7 @@ impl Renderer {
         } = warm;
         Renderer {
             surfaces: None,
+            output: super::Output::Sdr,
             fade_stops: [0.0; 2],
             surfaces_building,
             pipeline,
@@ -189,6 +190,7 @@ impl Renderer {
         let Renderer {
             surfaces: _,
             fade_stops: _,
+            output: _,
             surfaces_building,
             pipeline,
             format,

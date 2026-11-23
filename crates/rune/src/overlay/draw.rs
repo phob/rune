@@ -38,7 +38,7 @@ impl OverlayFrame<'_> {
         ) else {
             return false;
         };
-        let ok = crate::window::reblend_core(&live.surface, gpu, &mut live.config, renderer, &mut live.alpha, self.app.rt_mut());
+        let ok = crate::window::reconfigure_core(&live.surface, gpu, &mut live.config, renderer, &mut live.alpha, self.app.rt_mut());
         #[cfg(target_os = "windows")]
         live.slot.reconfigured(ok);
         ok

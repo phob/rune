@@ -618,7 +618,7 @@ impl Renderer {
                             self.layers.allocations += 1;
                         }
                         if t.blur.as_mut().unwrap().prepare(device, pipeline, staging,
-                            [rect[2], rect[3]], l.blur, l.blend == Blend::PlusLighter) {
+                            [rect[2], rect[3]], l.blur, (l.blend == Blend::PlusLighter).then_some(self.output.sdr_white())) {
                             self.layers.allocations += 1;
                         }
                     }

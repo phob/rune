@@ -280,6 +280,8 @@ impl<S: 'static> WindowSpec<S> {
         /// (gamma) space instead of linear light, matching CSS and Core Animation. With a
         /// `Compositor`, `Frame::srgb_blend` says which encoding its passes must match.
         srgb_blend(enabled: bool);
+        /// Whether this window draws in high dynamic range, like `App::hdr`.
+        hdr(hdr: crate::Hdr);
         /// This window's font smoothing (`App::font_smoothing`).
         font_smoothing(mode: crate::FontSmoothing);
         /// Size this window's height to its content, like `App::fit_content_height`.

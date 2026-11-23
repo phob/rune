@@ -7,7 +7,7 @@ use winit::event_loop::ActiveEventLoop;
 use winit::window::Window;
 
 use super::Host;
-use crate::render::{Gpu, Renderer};
+use crate::render::{Gpu, Output, Renderer};
 #[cfg(target_os = "windows")]
 use crate::window::chrome;
 use crate::window::chrome::{frame_chrome, place_chrome, sync_chrome_core};
@@ -26,7 +26,7 @@ use crate::window::surface::win;
 use crate::window::surface::{
     Backoff, BackoffEvent, HiddenPace, LoopFrame, Native, Redraw, SurfaceRetries, SurfaceStep,
     SURFACE_TRIES, TimerFrame, Win, configure, drawable_size, max_surface_dim,
-    rebuild_renderer_core, surface_config,
+    rebuild_renderer_core, target_format, window_config,
 };
 #[cfg(target_os = "windows")]
 use crate::window::win32::{covered_draw::CoveredDraw, cpu_frame, handover};
@@ -87,9 +87,17 @@ impl Host {
         crate::marks::mark("window.frame_installed");
         #[cfg(target_os = "windows")]
         let cloak = crate::platform::win32::Cloak::default();
-        // Its first frame on the CPU renderer, painted before it shows (`cpu_frame`).
+        // `App::hdr`: the display it opens on, and the light that asks for.
         #[cfg(target_os = "windows")]
-        let cpu_first = visible && !launcher && cpu_frame::opens_on_cpu(self);
+        let mut display = crate::window::win32::display::DisplayWatch::default();
+        #[cfg(target_os = "windows")]
+        let wanted = self.opening_output(&mut display, &window);
+        #[cfg(not(target_os = "windows"))]
+        let wanted = Output::Sdr;
+        // Its first frame on the CPU renderer, painted before it shows (`cpu_frame`): that frame is
+        // in standard range, so a window opening in scRGB draws its first on the GPU.
+        #[cfg(target_os = "windows")]
+        let cpu_first = visible && !launcher && !wanted.is_hdr() && cpu_frame::opens_on_cpu(self);
         #[cfg(target_os = "windows")]
         if visible && !cpu_first {
             // Unfocused (`App::open_inactive`), it never activates.
@@ -146,7 +154,11 @@ impl Host {
             rt.help_delay = rt.double_click_interval;
         }
         #[cfg(target_os = "windows")]
-        if cpu_first { return self.open_on_cpu(event_loop, window, a11y, a11y_start, frame, cloak, focus, open_as, built); }
+        if cpu_first {
+            let opened = self.open_on_cpu(event_loop, window, a11y, a11y_start, frame, cloak, focus, open_as, built);
+            if let Some(w) = self.win.as_mut() { w.native.display = display; }
+            return opened;
+        }
         let mut prewarmed = None;
         crate::marks::mark("gpu.begin");
         // A device that died while this window was closed draws nothing: make another.
@@ -180,9 +192,9 @@ impl Host {
         let active_gpu = gpu.as_ref().or(self.gpu.as_ref().map(|g| &g.0)).unwrap();
         let phys = window.inner_size();
         let initial = drawable_size(None, (phys.width, phys.height), max_surface_dim(Some(active_gpu)));
-        let srgb_blend = self.app.rt().srgb_blend();
-        let (mut config, translucent) = surface_config(&surface, &active_gpu.adapter, initial, srgb_blend)
+        let (mut config, translucent, output) = window_config(&surface, &active_gpu.adapter, initial, wanted, self.app.rt_mut())
             .ok_or("the GPU adapter can't present to this window")?;
+        let srgb_blend = self.app.rt().srgb_blend();
         #[cfg(target_os = "macos")]
         let launch_drawables = LaunchDrawables::cap(&mut config);
         // A window with a client-side frame keeps its pixels' alpha for the frame's corner arcs;
@@ -197,7 +209,7 @@ impl Host {
             }
             self.app.rt_mut().transparent = config.alpha_mode != wgpu::CompositeAlphaMode::Opaque;
         }
-        let target_format = if srgb_blend { config.format.remove_srgb_suffix() } else { config.format };
+        let target_format = target_format(&config, srgb_blend);
         if let Some(gpu) = gpu {
             crate::marks::mark("renderer.begin");
             let mut renderer = prewarmed.unwrap_or_else(|| Renderer::new(&gpu.device, target_format));
@@ -207,6 +219,7 @@ impl Host {
             self.gpu = Some((gpu, renderer));
         }
         let (gpu, renderer) = self.gpu.as_mut().unwrap();
+        renderer.set_output(output);
         rebuild_renderer_core(&gpu.device, renderer, target_format, self.app.rt_mut());
         // A refused configuration (the driver's, or a device that is gone) leaves a surface
         // wgpu panics on its next drawable: the window closes, and the next open makes both.
@@ -281,8 +294,10 @@ impl Host {
         cloak.extend(crate::time::now() + win::READY_FALLBACK);
         #[cfg(target_os = "windows")]
         let native = {
-            Native { cloak, frame, a11y_start, ..Default::default() }
+            Native { cloak, frame, a11y_start, display, ..Default::default() }
         };
+        #[cfg(target_os = "windows")]
+        if self.hdr != crate::Hdr::Off { super::output::log_output(self.native_handle.key(), output); }
         #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         let native = Native::default();
         self.win = Some(Win {
@@ -307,6 +322,8 @@ impl Host {
             redraw: std::cell::Cell::new(Redraw::Idle),
         });
         if launcher { self.win.as_mut().unwrap().first_frame.prepare(crate::time::now()); }
+        #[cfg(target_os = "windows")]
+        self.note_swap_chain();
         self.apply_placement(event_loop);
         #[cfg(target_os = "macos")]
         if visible && let Some(w) = &mut self.win && w.native.panel.is_some() { w.show(focus); }
@@ -444,9 +461,13 @@ impl Host {
         let size = window.inner_size();
         let prev = self.win.as_ref().map(|w| (w.config.width, w.config.height));
         let size = drawable_size(prev, (size.width, size.height), max_surface_dim(Some(&gpu)));
-        let srgb_blend = self.app.rt().srgb_blend();
-        let (mut config, translucent) = surface_config(&surface, &gpu.adapter, size, srgb_blend)
+        #[cfg(target_os = "windows")]
+        let wanted = if self.win.as_ref().is_some_and(|w| w.native.mode.cpu_draws()) { Output::Sdr } else { self.asked_output() };
+        #[cfg(not(target_os = "windows"))]
+        let wanted = Output::Sdr;
+        let (mut config, translucent, output) = window_config(&surface, &gpu.adapter, size, wanted, self.app.rt_mut())
             .ok_or("the GPU adapter can't present to this window")?;
+        let srgb_blend = self.app.rt().srgb_blend();
         let client_frame = self.client_frame(&window);
         if transparent || client_frame {
             config.alpha_mode = alpha_mode(transparent, client_frame, translucent);
@@ -456,9 +477,10 @@ impl Host {
         if let Err(error) = configure(&surface, &gpu, &config) {
             return Err(format!("the new GPU surface refused its configuration: {error}"));
         }
-        let target_format = if srgb_blend { config.format.remove_srgb_suffix() } else { config.format };
+        let target_format = target_format(&config, srgb_blend);
         let mut renderer = prewarmed.unwrap_or_else(|| Renderer::new(&gpu.device, target_format));
         renderer.set_srgb_blend(srgb_blend);
+        renderer.set_output(output);
         rebuild_renderer_core(&gpu.device, &mut renderer, target_format, self.app.rt_mut());
         let alpha = alpha_pass(&gpu, transparent, &config, target_format);
         #[cfg(target_os = "macos")]
@@ -486,6 +508,8 @@ impl Host {
         *self.gpu_pool.borrow_mut() = Arc::downgrade(&gpu);
         crate::render::surface_gpu(&gpu);
         self.gpu = Some((gpu, renderer));
+        #[cfg(target_os = "windows")]
+        self.note_swap_chain();
         Ok(())
     }
 

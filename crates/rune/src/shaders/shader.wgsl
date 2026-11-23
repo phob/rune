@@ -5,12 +5,16 @@
 // (kind 8), dashed borders (kind 10), and radial or angled linear gradients (kind 11).
 // Scope-end records (kind 9) never reach this shader. Every ordinary instance carries a
 // soft-edge clip. Output is premultiplied linear colour into an sRGB target (or sRGB into a
-// non-sRGB target when `srgb_blend` is enabled).
+// non-sRGB target when `srgb_blend` is enabled), or into an HDR window's scRGB `Rgba16Float`
+// target with SDR white at `g.light.x` (`in_light`).
 
 struct Globals {
     viewport: vec2<f32>,
     pad: vec2<f32>,
     flags: vec4<f32>,
+    // x: the level SDR colours are drawn at: 1 in standard range, an HDR window's SDR white in
+    // scRGB (`render::Output`).
+    light: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
@@ -354,10 +358,20 @@ fn hole_alpha(p: vec2<f32>, h: vec4<f32>) -> f32 {
 
 // A texel of a layer, clamped to [0, 1] when `clamp_unit` is set (`Blend::PlusLighter`), so
 // bilinear filtering saturates each accumulated source texel before interpolation (as
-// `layer_blur.wgsl` does before convolution).
+// `layer_blur.wgsl` does before convolution). Its colour saturates at SDR white's level
+// (`g.light.x`), where an HDR window's layer holds SDR white.
 fn layer_load(t: vec2<i32>, clamp_unit: bool) -> vec4<f32> {
     let c = textureLoad(images, t, 0);
-    return select(c, clamp(c, vec4<f32>(0.0), vec4<f32>(1.0)), clamp_unit);
+    return select(c, clamp(c, vec4<f32>(0.0), vec4<f32>(vec3<f32>(g.light.x), 1.0)), clamp_unit);
+}
+
+// An SDR colour, premultiplied, at the level the target holds SDR white at (`g.light.x`): its
+// colour scaled, its alpha as it is. Every kind but a layer's composite, once, where it's shaded,
+// so a layer holding SDR fills beside an HDR video composites with neither scaled twice.
+// Coverage an atlas fill writes into the glyph atlas (`params.w < 0`) isn't a colour.
+fn in_light(c: vec4<f32>, atlas_fill: bool) -> vec4<f32> {
+    if (atlas_fill) { return c; }
+    return vec4<f32>(c.rgb * g.light.x, c.a);
 }
 
 // A texel of a layer `size` pixels across; transparent outside it.
@@ -573,5 +587,5 @@ fn fs(i: Out) -> @location(0) vec4<f32> {
     if (g.flags.y > 0.5 && projection.z == 0.0 && (flat_fill || gray_mask)) {
         return round(clamp(source, vec4<f32>(0.0), vec4<f32>(1.0)) * 255.0) / 255.0;
     }
-    return source;
+    return in_light(source, kind == 2.0 && i.params.w < 0.0);
 }

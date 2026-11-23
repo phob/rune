@@ -1,12 +1,15 @@
 // Draws a blurred backdrop (`backdrop_blur.wgsl`'s half-resolution result) inside a backdrop
 // blur record's rounded rect, cut by its clip, at its opacity (`fill.a`). Group 0 is the uber
 // shader's, so the record lands in whichever target (frame or isolated layer) is being drawn.
+// The backdrop is a copy of that target, already in its light: an HDR window's scRGB
+// highlights go through the blur unclamped and aren't scaled again (`g.light`).
 // Prepended with `clip.wgsl`.
 
 struct Globals {
     viewport: vec2<f32>,
     pad: vec2<f32>,
     flags: vec4<f32>,
+    light: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;

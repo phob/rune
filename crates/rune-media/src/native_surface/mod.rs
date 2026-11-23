@@ -33,10 +33,16 @@ pub enum Matrix {
     Bt601,
     Bt709,
 }
+/// How a frame's values encode light.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Transfer {
     Srgb,
     Bt709,
+    /// Already linear light in scRGB: BT.709 primaries, 1.0 at 80 nits, unclamped, so values
+    /// above 1 are highlights brighter than SDR and negative ones reach colours outside BT.709
+    /// (wide gamut). An `Rgba16Float` shared texture's frames (`windows::SharedFormat`). Drawn
+    /// as they are into an HDR window's scRGB target; clipped to SDR's range elsewhere.
+    ScRgbLinear,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Format {
@@ -293,7 +299,8 @@ impl NativeSurface {
         Ok(())
     }
     /// Shows the frame in a D3D shared texture (`windows::SharedTexture`), read on Rune's D3D12
-    /// device the first time it draws.
+    /// device the first time it draws. An `Rgba16Float` texture's frame is scRGB
+    /// (`Transfer::ScRgbLinear`).
     #[cfg(target_os = "windows")]
     pub fn push_shared(&self, texture: windows::SharedTexture, frame_id: u64) -> Result<(), String> {
         let size = texture.size();
@@ -304,7 +311,7 @@ impl NativeSurface {
             id: frame_id,
             size,
             format: Format::Bgra,
-            color: ColorInfo::default(),
+            color: ColorInfo { matrix: Matrix::Bt709, transfer: texture.shared_format().transfer() },
             orient: Orient::UP,
             source: Source::Shared(texture),
         });
@@ -439,6 +446,7 @@ pub fn nv12_reference(y: u8, cb: u8, cr: u8, format: Format, color: ColorInfo) -
 }
 pub fn linear(x: f32, transfer: Transfer) -> f32 {
     match transfer {
+        Transfer::ScRgbLinear => x,
         Transfer::Srgb => rune_core::color::srgb_decode(x),
         Transfer::Bt709 => {
             if x < 0.081 {
@@ -523,7 +531,7 @@ mod tests {
     #[test]
     fn range_endpoints_and_neutral_chroma() {
         for matrix in [Matrix::Bt601, Matrix::Bt709] {
-            for transfer in [Transfer::Srgb, Transfer::Bt709] {
+            for transfer in [Transfer::Srgb, Transfer::Bt709, Transfer::ScRgbLinear] {
                 let c = ColorInfo { matrix, transfer };
                 assert_eq!(nv12_reference(16, 128, 128, Format::Nv12Video, c), [0.0; 3]);
                 for v in nv12_reference(235, 128, 128, Format::Nv12Video, c) {

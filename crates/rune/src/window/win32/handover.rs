@@ -22,7 +22,7 @@ use crate::render::{Gpu, Renderer};
 use crate::time::Instant;
 use crate::window::WakeEvent;
 use crate::window::host::{CompositorFrame, Host};
-use crate::window::surface::{Win, acquire, configure, drawable_size, max_surface_dim, reblend_core, rebuild_renderer_core, surface_config};
+use crate::window::surface::{Win, acquire, configure, drawable_size, max_surface_dim, reconfigure_core, rebuild_renderer_core, surface_config};
 
 /// Where a window's frames go. Windows that need the GPU from their first frame (a compositor,
 /// a translucent window, an overlay) are `Gpu` from the start, as on every other platform.
@@ -202,7 +202,7 @@ impl Host {
         let Prepared { gpu, mut renderer, surface, mut config, handover } = prepared;
         let gpu = Arc::new(gpu);
         if renderer.srgb_blend() != self.app.rt().srgb_blend() {
-            if !reblend_core(&surface, &gpu, &mut config, &mut renderer, &mut w.alpha, self.app.rt_mut()) {
+            if !reconfigure_core(&surface, &gpu, &mut config, &mut renderer, &mut w.alpha, self.app.rt_mut()) {
                 return self.fail_gpu("couldn't reconfigure the surface for the window's blend mode".into(), tries);
             }
         } else {
@@ -228,6 +228,7 @@ impl Host {
         if size.width > 0 && size.height > 0 { w.resize_surface(Some(&*gpu), size); }
         self.gpu = Some((gpu, renderer));
         w.request_redraw();
+        self.note_swap_chain();
     }
 
     /// While handing over: the GPU draws the instances the CPU just painted, into its swap chain
@@ -237,7 +238,7 @@ impl Host {
         if !matches!(l.native.mode, SurfaceMode::HandingOver { paused: false, .. }) { return; }
         if renderer.srgb_blend() != self.app.rt().srgb_blend() {
             let Some(surface) = l.surface.as_ref() else { return };
-            let ok = reblend_core(surface, gpu, &mut l.config, renderer, &mut l.alpha, self.app.rt_mut());
+            let ok = reconfigure_core(surface, gpu, &mut l.config, renderer, &mut l.alpha, self.app.rt_mut());
             l.native.slot.reconfigured(ok);
             if !ok {
                 l.surface_ok = false;
@@ -348,6 +349,8 @@ impl Host {
                 w.presented = None;
                 // What was asked for while the GPU finished its frame draws now, on the GPU.
                 w.request_redraw();
+                // The CPU drew in standard range: the light the display asks for comes now.
+                self.settle_output();
             }
             SurfaceMode::HandingOver { done: None, .. } | SurfaceMode::Gpu | SurfaceMode::Cpu { .. } | SurfaceMode::Handed { .. } | SurfaceMode::Rebinding { .. } => {}
         }

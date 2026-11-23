@@ -31,6 +31,8 @@ pub(super) struct Uploads {
     viewport: AtomicU64,
     /// Gamma-space blend, byte-source, and packed scroll-fade stops last written to globals.
     srgb: Option<(bool, bool, [u32; 2])>,
+    /// The SDR white level last written to globals (`Renderer::set_output`), as bits.
+    light: Option<u32>,
     /// `Staging::lost` as last seen by `prepare` and by `upload_images`.
     lost: (u64, u64),
     /// The paint the next `prepare`'s instances come from, and which of them alone changed
@@ -48,7 +50,7 @@ pub(super) struct Uploads {
 
 impl Default for Uploads {
     fn default() -> Uploads {
-        Uploads { staging: None, frame_writes: None, instances: Vec::new(), batched: false, has_layers: false, viewport: AtomicU64::new(u64::MAX), srgb: None, lost: (0, 0), next: None, held_paint: None, patched: false,
+        Uploads { staging: None, frame_writes: None, instances: Vec::new(), batched: false, has_layers: false, viewport: AtomicU64::new(u64::MAX), srgb: None, light: None, lost: (0, 0), next: None, held_paint: None, patched: false,
             #[cfg(test)] globals_writes: 0, #[cfg(test)] batch_runs: 0 }
     }
 }
@@ -314,6 +316,11 @@ impl Renderer {
             staging.write_buffer(&self.globals, std::mem::offset_of!(Globals, flags) as u64, bytemuck::cast_slice(&flags));
             #[cfg(test)] { self.uploads.globals_writes += 1; }
         }
+        let white = self.output.sdr_white();
+        if self.uploads.light.replace(white.to_bits()) != Some(white.to_bits()) {
+            staging.write_buffer(&self.globals, std::mem::offset_of!(Globals, light) as u64, bytemuck::cast_slice(&[white, 0.0, 0.0, 0.0]));
+            #[cfg(test)] { self.uploads.globals_writes += 1; }
+        }
         self.count = instances.len() as u32;
         if !self.uploads.batched {
             self.batch(instances);
@@ -389,6 +396,7 @@ impl Renderer {
         }
         if let Some(s) = &mut self.surfaces {
             s.set_srgb_blend(self.srgb_blend);
+            s.set_sdr_white(self.output.sdr_white());
             if self.layers.additive.is_some() { s.add_plus_lighter(device, layers::FORMAT); }
             s.prepare(device,queue,draws,viewport);
         }
@@ -557,6 +565,7 @@ impl Renderer {
         self.uploads.forget_instances();
         self.uploads.viewport.store(u64::MAX, Ordering::Relaxed);
         self.uploads.srgb = None;
+        self.uploads.light = None;
         atlas.resend_rows();
         atlas.outlines.invalidate();
         self.layers.forget_blur_uniforms();

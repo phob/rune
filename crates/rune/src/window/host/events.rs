@@ -177,6 +177,14 @@ impl Host {
             WakeEvent::GpuReady(_) => self.gpu_ready(),
             #[cfg(not(target_os = "windows"))]
             WakeEvent::GpuReady(_) => {}
+            #[cfg(target_os = "windows")]
+            WakeEvent::Display(_) => self.follow_display(),
+            #[cfg(not(target_os = "windows"))]
+            WakeEvent::Display(_) => {}
+            #[cfg(target_os = "windows")]
+            WakeEvent::Hdr(_, hdr) => self.set_hdr(hdr),
+            #[cfg(not(target_os = "windows"))]
+            WakeEvent::Hdr(_, hdr) => self.hdr = hdr.resolved(),
             WakeEvent::Reopen | WakeEvent::Turn | WakeEvent::Quit(_) => {}
         }
     }
@@ -224,6 +232,13 @@ impl Host {
         match &event {
             WindowEvent::CursorMoved { .. } | WindowEvent::CursorEntered { .. } | WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. } => self.sighted(),
             WindowEvent::Focused(true) | WindowEvent::Moved(_) | WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => self.look_stale(),
+            _ => {}
+        }
+        // `App::hdr`: the window's display may have changed (`win32::display`).
+        #[cfg(target_os = "windows")]
+        match &event {
+            WindowEvent::Moved(_) | WindowEvent::ScaleFactorChanged { .. } => self.follow_display_if_moved(),
+            WindowEvent::Focused(true) => self.follow_display(),
             _ => {}
         }
         if !matches!(event, WindowEvent::RedrawRequested | WindowEvent::CursorMoved { .. }) && let Some(w) = &mut self.win {

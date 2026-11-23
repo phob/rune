@@ -12,8 +12,12 @@ pub(crate) struct PaintState {
     /// Drawn rect per node (points, root space), for tools and hit tests.
     pub(crate) drawn: Vec<[f32; 4]>,
     pub(super) quads_frame: u64,
-    /// Opt-in gamma-space (sRGB) blending for translucent fills, shadows and blurs.
+    /// Gamma-space (sRGB) blending for translucent fills, shadows and blurs, as frames draw:
+    /// what the app asked (`srgb_requested`), unless the window's target holds linear light
+    /// (`linear_output`, an HDR window's scRGB), which blends in linear light whatever was asked.
     pub(in crate::runtime) srgb_blend: bool,
+    srgb_requested: bool,
+    linear_output: bool,
     /// The shell shows native views for the first `MAX_NATIVE_MATERIALS` of `materials`; their
     /// elements skip their fill and cut their shadows out of their interior.
     pub(super) native_materials: bool,
@@ -104,6 +108,8 @@ impl PaintState {
             drawn: Vec::new(),
             quads_frame: 0,
             srgb_blend: false,
+            srgb_requested: false,
+            linear_output: false,
             native_materials: false,
             videos_active: false,
             animated_icons: false,
@@ -152,10 +158,32 @@ impl PaintState {
         self.srgb_blend
     }
 
+    /// What the app asked (`App::srgb_blend`, `Tx::set_srgb_blend`), which `srgb_blend` follows
+    /// while the target isn't linear light.
+    #[inline]
+    pub(in crate::runtime) fn srgb_requested(&self) -> bool {
+        self.srgb_requested
+    }
+
+    /// Asks for sRGB blending; true when the blend frames draw with changed.
     #[inline]
     pub(in crate::runtime) fn set_srgb_blend(&mut self, enabled: bool) -> bool {
-        let changed = self.srgb_blend != enabled;
-        self.srgb_blend = enabled;
+        self.srgb_requested = enabled;
+        self.settle_blend()
+    }
+
+    /// The window's target holds linear light (`on`, an HDR window's scRGB) or not; true when
+    /// the blend frames draw with changed.
+    #[inline]
+    pub(in crate::runtime) fn set_linear_output(&mut self, on: bool) -> bool {
+        self.linear_output = on;
+        self.settle_blend()
+    }
+
+    fn settle_blend(&mut self) -> bool {
+        let blend = self.srgb_requested && !self.linear_output;
+        let changed = self.srgb_blend != blend;
+        self.srgb_blend = blend;
         changed
     }
 

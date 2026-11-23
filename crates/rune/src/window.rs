@@ -31,6 +31,7 @@ mod chrome;
 mod event_loop;
 mod file_drop;
 mod handle;
+pub(crate) mod hdr;
 mod host;
 mod keys;
 pub mod spec;
@@ -54,7 +55,7 @@ pub(crate) use state::frame;
 pub(crate) use state::{Life, Minimize, MinimizeEvent, Sight};
 pub(crate) use surface::{
     Backoff, BackoffEffect, BackoffEvent, HiddenPace, Missed, Presented, TIMER_FRAME,
-    acquire_checked, configure, reblend_core, rebuild_renderer_core,
+    acquire_checked, configure, reconfigure_core, rebuild_renderer_core,
     poll_timer_deadline_core, surface_config, timer_deadline_core, timer_wants_frame_core,
 };
 #[cfg(target_arch = "wasm32")]
@@ -119,6 +120,12 @@ pub(crate) enum WakeEvent {
     /// Windows: the GPU a CPU-drawn window was waiting for is made, or failed (`cpu_frame`).
     #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     GpuReady(usize),
+    /// Windows: displays or system settings changed (`win32::display`): an `App::hdr` window
+    /// reads its display again.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    Display(usize),
+    /// `WindowHandle::set_hdr`.
+    Hdr(usize, crate::Hdr),
 }
 
 /// What `Windows` needs of a host, whatever its state type: an app window or an overlay.
@@ -337,7 +344,7 @@ impl ApplicationHandler<WakeEvent> for Windows {
         let slot = match &event {
             WakeEvent::DisplayTick(i) | WakeEvent::App(i) | WakeEvent::Live(i) | WakeEvent::Window(i, _) | WakeEvent::Focus(i)
                 | WakeEvent::Position(i, _) | WakeEvent::Level(i, _) | WakeEvent::Place(i, _) | WakeEvent::Frame(i, _)
-                | WakeEvent::A11y(i) | WakeEvent::FrameSlot(i) | WakeEvent::GpuReady(i) => *i,
+                | WakeEvent::A11y(i) | WakeEvent::FrameSlot(i) | WakeEvent::GpuReady(i) | WakeEvent::Display(i) | WakeEvent::Hdr(i, _) => *i,
             WakeEvent::Reopen => {
                 self.reopen(event_loop);
                 self.cleanup(event_loop);

@@ -12,6 +12,8 @@ pub(super) struct NativeWindow {
     pub(super) ready: AtomicBool,
     /// What the host's meter last published.
     pub(super) stats: Arc<Mutex<SurfaceStats>>,
+    /// What DXGI said about the window's swap chain when the host last set it up (Windows).
+    pub(super) swap_chain: Mutex<Option<crate::window::hdr::SwapChainReport>>,
     pub(super) route: Mutex<Route>,
 }
 
@@ -74,6 +76,10 @@ impl WindowHandle {
     /// The window's frame counts: redraws, presents, failed drawable acquisitions, loop turns
     /// and pacing: current totals, and per-second rates updated once a second while it draws.
     pub fn surface_stats(&self) -> SurfaceStats { crate::frame::surface_stats::read(&self.native.stats) }
+    /// What DXGI says about the window's swap chain (format, buffers, the colour space Rune set
+    /// and whether it presents) as its opening or its last output switch (`App::hdr`) left it.
+    /// None before then, and off Windows.
+    pub fn swap_chain(&self) -> Option<crate::window::hdr::SwapChainReport> { *self.native.swap_chain.lock().unwrap() }
     pub(super) fn window(&self) -> Result<Arc<Window>, String> {
         self.native.window.lock().unwrap().upgrade().ok_or_else(|| "window is closed".into())
     }
@@ -139,6 +145,12 @@ impl WindowHandle {
     }
     pub fn set_always_on_top(&self, on: bool) {
         self.send(move |slot| WakeEvent::Level(slot, on));
+    }
+    /// Switches whether the window draws in high dynamic range (`App::hdr`) while it runs: a
+    /// player turning it on for an HDR clip and off after, say. Its swap chain is made again
+    /// in the new format before the next frame. `RUNE_HDR` still overrides it.
+    pub fn set_hdr(&self, hdr: crate::Hdr) {
+        self.send(move |slot| WakeEvent::Hdr(slot, hdr));
     }
     /// Physical desktop pixels; retained across recreation. Unsupported on Wayland.
     pub fn set_position(&self, position: (i32, i32)) {

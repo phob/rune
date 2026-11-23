@@ -167,7 +167,7 @@ impl LayerHostCore {
 
     fn reblend(&mut self, rt: &mut RuntimeCore) -> bool {
         let mut alpha = None;
-        crate::window::reblend_core(&self.surface, &self.gpu, &mut self.config, &mut self.renderer, &mut alpha, rt)
+        crate::window::reconfigure_core(&self.surface, &self.gpu, &mut self.config, &mut self.renderer, &mut alpha, rt)
     }
 
     fn prepare_draw(&mut self, rt: &mut RuntimeCore, frame: wgpu::SurfaceTexture) -> PreparedEmbedFrame {

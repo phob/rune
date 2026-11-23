@@ -1,6 +1,6 @@
 //! Window GPU surface configuration, pacing, backoff, presentation tracking and platform handles.
 
-use crate::render::{Gpu, Renderer};
+use crate::render::{Gpu, Output, Renderer};
 use crate::runtime::RuntimeCore;
 
 pub(in crate::window) mod backoff;
@@ -110,23 +110,63 @@ pub(crate) fn surface_config(surface: &wgpu::Surface, adapter: &wgpu::Adapter, (
     Some((config, crate::render::translucency::mode(surface, adapter)))
 }
 
-/// Follows a blend switch (`Tx::set_srgb_blend`) on a configured surface: reconfigures it for
-/// `rt`'s mode at its size and alpha mode, rebuilds `renderer` when its target format changes,
-/// and rebuilds the `alpha` pass (when there is one) for the new format. Returns false when the
+/// Whether `surface` can present scRGB (`Rgba16Float` in `ExtendedSrgbLinear`) on `adapter`.
+pub(crate) fn presents_sc_rgb(surface: &wgpu::Surface, adapter: &wgpu::Adapter) -> bool {
+    surface.get_capabilities(adapter).color_spaces(wgpu::TextureFormat::Rgba16Float).contains(wgpu::SurfaceColorSpaces::EXTENDED_SRGB_LINEAR)
+}
+
+/// `output`, or standard range where `surface` can't present it.
+pub(crate) fn output_for(surface: &wgpu::Surface, adapter: &wgpu::Adapter, output: Output) -> Output {
+    if output.is_hdr() && !presents_sc_rgb(surface, adapter) { Output::Sdr } else { output }
+}
+
+/// Turns a standard-range configuration (`surface_config`) into `output`'s: an HDR output's
+/// swap chain format and colour space, with no other view (an `Rgba16Float` target holds
+/// linear light, so the frame never blends in sRGB). Check `output_for` first.
+pub(crate) fn output_config(config: &mut wgpu::SurfaceConfiguration, output: Output) {
+    if let Some((format, color_space)) = output.surface() {
+        (config.format, config.color_space, config.view_formats) = (format, color_space, Vec::new());
+    }
+}
+
+/// The renderer's target format for a surface configured as `config`, in `rt`'s blend: the
+/// non-sRGB view of an 8-bit format when it blends in sRGB, else the format itself.
+pub(crate) fn target_format(config: &wgpu::SurfaceConfiguration, srgb_blend: bool) -> wgpu::TextureFormat {
+    if srgb_blend { config.format.remove_srgb_suffix() } else { config.format }
+}
+
+/// `surface_config` in `wanted`'s light (standard range where the surface can't present it),
+/// with `rt` blending as that light asks: the configuration, the alpha mode that composites
+/// translucent pixels, and the output it got.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub(crate) fn window_config(surface: &wgpu::Surface, adapter: &wgpu::Adapter, size: (u32, u32), wanted: Output, rt: &mut RuntimeCore)
+    -> Option<(wgpu::SurfaceConfiguration, Option<wgpu::CompositeAlphaMode>, Output)> {
+    let output = output_for(surface, adapter, wanted);
+    rt.set_linear_output(output.is_hdr());
+    let (mut config, translucent) = surface_config(surface, adapter, size, rt.srgb_blend())?;
+    output_config(&mut config, output);
+    Some((config, translucent, output))
+}
+
+/// Follows a blend switch (`Tx::set_srgb_blend`) or an output switch (`Renderer::set_output`,
+/// `App::hdr`) on a configured surface: reconfigures it for `rt`'s blend and the renderer's
+/// output at its size and alpha mode, rebuilds `renderer` when its target format changes, and
+/// rebuilds the `alpha` pass (when there is one) for the new format. Returns false when the
 /// surface can't be configured.
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
-pub(crate) fn reblend_core(surface: &wgpu::Surface, gpu: &Gpu, config: &mut wgpu::SurfaceConfiguration,
+pub(crate) fn reconfigure_core(surface: &wgpu::Surface, gpu: &Gpu, config: &mut wgpu::SurfaceConfiguration,
     renderer: &mut Renderer, alpha: &mut Option<crate::render::surface_alpha::AlphaSurface>, rt: &mut RuntimeCore) -> bool {
     let srgb = rt.srgb_blend();
-    let Some((next, _)) = surface_config(surface, &gpu.adapter, (config.width, config.height), srgb) else { return false };
-    if (config.format, &config.view_formats) != (next.format, &next.view_formats) {
-        (config.format, config.view_formats) = (next.format, next.view_formats);
+    let Some((mut next, _)) = surface_config(surface, &gpu.adapter, (config.width, config.height), srgb) else { return false };
+    output_config(&mut next, renderer.output());
+    if (config.format, config.color_space, &config.view_formats) != (next.format, next.color_space, &next.view_formats) {
+        (config.format, config.color_space, config.view_formats) = (next.format, next.color_space, next.view_formats);
         if let Err(error) = configure(surface, gpu, config) {
-            eprintln!("rune: could not reconfigure a surface for a blend switch: {error}");
+            eprintln!("rune: could not reconfigure a surface for a blend or output switch: {error}");
             return false;
         }
     }
-    let target = if srgb { config.format.remove_srgb_suffix() } else { config.format };
+    let target = target_format(config, srgb);
     rebuild_renderer_core(&gpu.device, renderer, target, rt);
     if alpha.is_some() {
         *alpha = Some(crate::render::surface_alpha::AlphaSurface::new(&gpu.device, target, (config.width, config.height)));

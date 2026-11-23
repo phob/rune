@@ -19,7 +19,7 @@ use crate::window::chrome::sync_platform_core;
 use crate::window::handle::native_window_number;
 use crate::window::state::{Cover, RestEvent, rest};
 use crate::window::surface::{
-    Backoff, BackoffEffect, BackoffEvent, Missed, Presented, Win, acquire, reblend_core,
+    Backoff, BackoffEffect, BackoffEvent, Missed, Presented, Win, acquire, reconfigure_core,
 };
 #[cfg(target_os = "macos")]
 use crate::window::surface::{TIMER_FRAME, configure};
@@ -189,7 +189,7 @@ impl WindowFrame<'_> {
     fn reblend_surface(&mut self) -> bool {
         let (Some(l), Some((gpu, renderer))) = (self.host.win.as_mut(), self.host.gpu.as_mut()) else { return false };
         let Some(surface) = l.surface.as_ref() else { return false };
-        let ok = reblend_core(surface, gpu, &mut l.config, renderer, &mut l.alpha, self.host.app.rt_mut());
+        let ok = reconfigure_core(surface, gpu, &mut l.config, renderer, &mut l.alpha, self.host.app.rt_mut());
         #[cfg(target_os = "windows")]
         l.native.slot.reconfigured(ok);
         ok

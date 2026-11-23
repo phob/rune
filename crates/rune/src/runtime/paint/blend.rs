@@ -17,8 +17,19 @@ impl RuntimeCore {
         }
     }
 
+    /// Whether frames blend in sRGB encoding: what `set_srgb_blend` asked, unless the window's
+    /// target holds linear light (an HDR window, `App::hdr`), which blends in linear light.
     pub fn srgb_blend(&self) -> bool {
         self.paint.srgb_blend()
+    }
+
+    /// The window's target holds extended-range linear light (scRGB, `App::hdr`) from the next
+    /// frame (`on`), or what `set_srgb_blend` asks again: frames blend in linear light while it
+    /// does, and every colour is premultiplied linear.
+    pub(crate) fn set_linear_output(&mut self, on: bool) {
+        if self.paint.set_linear_output(on) {
+            self.commit.dirty = true;
+        }
     }
 
     pub fn fade_stops(&self) -> [f32; 2] {

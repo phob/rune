@@ -233,8 +233,10 @@ impl Renderer {
         if let Some(s) = &mut self.surfaces { s.add_format(device, format); }
     }
 
-    /// Switches the frame pass's target format (`!format.is_srgb()` turns `srgb_blend` on),
-    /// keeping the glyph and image atlases, offscreen layer targets and `extra` pipelines.
+    /// Switches the frame pass's target format, keeping the glyph and image atlases, offscreen
+    /// layer targets and `extra` pipelines. A non-sRGB 8-bit view turns `srgb_blend` on; an
+    /// `*Srgb` format, and a float one (an HDR window's `Rgba16Float`, which holds linear light,
+    /// not sRGB-encoded values), turn it off.
     pub fn set_format(&mut self, device: &wgpu::Device, format: wgpu::TextureFormat) {
         if self.format == format { return; }
         let next = match self.extra.iter().position(|(f, _)| *f == format) {
@@ -251,7 +253,7 @@ impl Renderer {
             Some(i) => self.pinned = Some(self.pinned_extra.swap_remove(i).1),
             None => self.start_pinned(device),
         }
-        self.srgb_blend = !format.is_srgb();
+        self.srgb_blend = super::output::holds_encoded(format);
         if self.layer_stats().targets > 0 { self.add_layer_format(device, format); }
         let [vw, vh] = self.target_frame(None).1;
         if !self.backdrops.is_empty() && vw > 0 && vh > 0 {
