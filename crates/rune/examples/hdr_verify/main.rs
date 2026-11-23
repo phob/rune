@@ -88,6 +88,7 @@ mod window {
             .args(Vec::new())
             .init(move || View { surface: view_surface })
             .hdr(hdr)
+            .srgb_blend(case.is_none_or(|c| c.srgb_blend))
             .compositor(capture)
             .on_ready(move |h| *kept.borrow_mut() = Some(h.clone()))
             .run();
@@ -130,8 +131,14 @@ mod window {
             .child(text("SDR UI").font(TextStyle::new(15.0, 600.0)).color(Color::WHITE))
             .child(el().key("sdr_white_swatch").size(96.0, 96.0).fill(Color::WHITE).radius(8.0))
             .child(text("SDR white swatch").font(TextStyle::new(12.0, 500.0)).color(LABEL))
-            .child(el().key("sdr_grey_swatch").size(96.0, 48.0).fill(Color { r: 0.18, g: 0.18, b: 0.18, a: 1.0 }).radius(8.0));
-        col().key("root").fill(Color { r: crate::BACKGROUND_LINEAR, g: crate::BACKGROUND_LINEAR, b: crate::BACKGROUND_LINEAR, a: 1.0 })
+            .child(el().key("sdr_grey_swatch").size(96.0, 48.0).fill(Color { r: 0.18, g: 0.18, b: 0.18, a: 1.0 }).radius(8.0))
+            // Drawn once into a layer of its own and composited from it after: a switch of SDR
+            // white must draw it again.
+            .child(el().key("cached_white_swatch").cache().size(96.0, 48.0).child(el().size(96.0, 48.0).fill(Color::WHITE).radius(8.0)))
+            .child(text("cached (El::cache)").font(TextStyle::new(12.0, 500.0)).color(LABEL));
+        // The root's colour is the window's clear colour (`LoadOp::Clear`). At zero alpha the root
+        // paints no rect of its own over it, so the background is the clear colour alone.
+        col().key("root").fill(Color { r: crate::BACKGROUND_LINEAR, g: crate::BACKGROUND_LINEAR, b: crate::BACKGROUND_LINEAR, a: 0.0 })
             .padding(24.0).gap(16.0)
             .child(text("Rune scRGB HDR: D3D11 FP16 shared texture, scRGB swap chain").font(TextStyle::new(16.0, 600.0)).color(Color::WHITE))
             .child(row().gap(24.0).child(video).child(side))

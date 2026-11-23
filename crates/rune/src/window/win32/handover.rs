@@ -226,9 +226,9 @@ impl Host {
         w.surface_ok = true;
         // The window changed size while the GPU was made.
         if size.width > 0 && size.height > 0 { w.resize_surface(Some(&*gpu), size); }
+        w.note_swap_chain();
         self.gpu = Some((gpu, renderer));
         w.request_redraw();
-        self.note_swap_chain();
     }
 
     /// While handing over: the GPU draws the instances the CPU just painted, into its swap chain

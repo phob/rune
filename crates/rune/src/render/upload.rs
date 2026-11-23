@@ -367,10 +367,11 @@ impl Renderer {
         if let Some(s) = &mut self.surfaces { s.set_punched(keys); }
     }
 
-    /// The punch pipeline has compiled (`set_punched_surfaces`).
+    /// The punch pipeline for the frame's format has compiled (`set_punched_surfaces`).
     #[cfg(target_os = "windows")]
     pub(crate) fn surface_punch_ready(&mut self) -> bool {
-        self.surfaces.as_mut().is_some_and(crate::native_surface::SurfaceRenderer::punch_ready)
+        let format = self.format;
+        self.surfaces.as_mut().is_some_and(|s| s.punch_ready(format))
     }
 
     /// Whether the last frame drew surface `key` inside an isolated layer; None when it didn't
@@ -391,6 +392,9 @@ impl Renderer {
             let mut surfaces = built.unwrap_or_else(|| crate::native_surface::SurfaceRenderer::new(device, self.format));
             surfaces.set_srgb_blend(self.srgb_blend);
             surfaces.set_staging(self.uploads.staging(device, queue));
+            // Built for the format the frame had when it started (`build_surfaces`), which a
+            // switch since (an HDR window's `Rgba16Float`) has put among `extra`.
+            surfaces.add_format(device, self.format);
             for (format, _) in &self.extra { surfaces.add_format(device, *format); }
             self.surfaces = Some(surfaces);
         }

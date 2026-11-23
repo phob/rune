@@ -210,7 +210,7 @@ impl RuntimeCore {
             && self.kbd.modal_scope.is_none() && !self.commit.defaults.force_focus_rings && !disabled();
         let key = shareable.then(|| {
             let mut h = rune_motion::Fx::default();
-            bits(&mut h, &[self.env.scale]);
+            bits(&mut h, &[self.env.scale, self.paint.sdr_white()]);
             bits(&mut h, &vp);
             (self.paint.srgb_blend, self.track_marks, self.reduced_motion, self.env.system_dark, self.text.emit_key(), self.tree.has_sticky, tree_order).hash(&mut h);
             (self.kbd.focus.path(), self.kbd.focus.keyboard(), self.kbd.focus.shown()).hash(&mut h);

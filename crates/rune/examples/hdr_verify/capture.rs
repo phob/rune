@@ -41,6 +41,8 @@ struct Readback {
     format: wgpu::TextureFormat,
     backbuffer: Value,
     geometry: Geometry,
+    /// Instances that draw at the background sample.
+    covering: usize,
 }
 
 /// Where things are in the back buffer, in device pixels.
@@ -49,7 +51,9 @@ struct Geometry {
     scale: f32,
     video: [f32; 4],
     white: [f32; 4],
+    cached: [f32; 4],
     hud: [f32; 4],
+    background: [f32; 4],
 }
 
 pub struct Capture {
@@ -122,8 +126,14 @@ fn copy<S: 'static>(f: &mut Frame<'_, S>) -> Readback {
         wgpu::Extent3d { width, height, depth_or_array_layers: 1 });
     let scale = f.rt.env.scale;
     let rect = |key: &str| f.rt.presented(key).map_or([0.0; 4], |(r, _)| r.map(|v| v * scale));
-    let geometry = Geometry { scale, video: rect("video"), white: rect("sdr_white_swatch"), hud: rect("hud") };
-    Readback { buffer, row, size: (width, height), format: texture.format(), backbuffer: backbuffer_desc(texture), geometry }
+    let geometry = Geometry { scale, video: rect("video"), white: rect("sdr_white_swatch"), cached: rect("cached_white_swatch"), hud: rect("hud"), background: rect("bg_probe") };
+    // What draws at the background sample: nothing, so that pixel is the clear colour's alone.
+    let (bx, by) = (geometry.background[0] + geometry.background[2] * 0.5, geometry.background[1] + geometry.background[3] * 0.5);
+    let covering = f.rt.instances.iter().filter(|i| {
+        let r = i.rect;
+        i.fill.iter().any(|v| *v != 0.0) && bx >= r[0] && bx < r[0] + r[2] && by >= r[1] && by < r[1] + r[3]
+    }).count();
+    Readback { buffer, row, size: (width, height), format: texture.format(), backbuffer: backbuffer_desc(texture), geometry, covering }
 }
 
 /// The back buffer's own D3D12 description: what DXGI made the swap chain's buffers.
@@ -236,6 +246,10 @@ fn analyze(device: &wgpu::Device, r: &Readback, output: rune::render::Output, ha
     let mut white = pixels.region(wx, wy, 4);
     white["expected_rgb"] = json!([sdr_white, sdr_white, sdr_white]);
     regions.insert("ui_sdr_white_swatch".into(), white);
+    let (cx, cy) = center(g.cached);
+    let mut cached = pixels.region(cx, cy, 4);
+    cached["expected_rgb"] = json!([sdr_white, sdr_white, sdr_white]);
+    regions.insert("ui_cached_white_swatch".into(), cached);
     // The HUD's frosted glass where it covers the 1000-nit patch, away from its text and edges.
     let hdr_1000 = pattern::patches(sdr_white).into_iter().find(|p| p.name == "hdr_1000_nits").expect("the 1000-nit patch").rect;
     let (px, py) = texel(hdr_1000[0] as f32 + hdr_1000[2] as f32 * 0.5, hdr_1000[1] as f32 + hdr_1000[3] as f32 * 0.5);
@@ -249,10 +263,11 @@ fn analyze(device: &wgpu::Device, r: &Readback, output: rune::render::Output, ha
     }).collect();
     hud["edge_profile_rgba"] = json!(profile);
     regions.insert("hud_frosted_over_1000_nits".into(), hud);
-    // The window's own background (its clear colour and root fill), below the video.
-    let (bx, by) = (g.video[0] + 40.0, g.video[1] + g.video[3] + 40.0 * g.scale);
+    // The window's own background, below the video, where nothing draws over the clear colour.
+    let (bx, by) = center(g.background);
     let mut background = pixels.region(bx, by, 2);
     background["expected_rgb"] = json!([crate::BACKGROUND_LINEAR * sdr_white; 3].to_vec());
+    background["covering_instances"] = json!(r.covering);
     regions.insert("ui_background".into(), background);
     // The ramp: the middle row of its band, texel for texel.
     let ramp_y = (g.video[1] + (pattern::RAMP[1] + pattern::RAMP[3] / 2) as f32).round() as u32;
@@ -273,6 +288,8 @@ fn analyze(device: &wgpu::Device, r: &Readback, output: rune::render::Output, ha
             "size": [r.size.0, r.size.1],
             "video_rect_px": g.video,
             "sdr_white_swatch_rect_px": g.white,
+            "cached_white_swatch_rect_px": g.cached,
+            "background_probe_rect_px": g.background,
             "hud_rect_px": g.hud,
         },
         "swap_chain": report.map(|s| json!({

@@ -14,7 +14,7 @@ impl Host {
     /// `Hdr::Off`: for a window being made, before it has a surface.
     pub(in crate::window) fn opening_output(&self, display: &mut DisplayWatch, window: &Window) -> Output {
         if self.hdr == Hdr::Off { return Output::Sdr; }
-        self.hdr.output(display.read(window, &self.native_handle))
+        self.hdr.output(display.read(window))
     }
 
     /// Reads the window's display again and switches to the output it asks for: displays or
@@ -22,7 +22,7 @@ impl Host {
     /// the front. A window with `Hdr::Off` reads nothing and stays in standard range.
     pub(in crate::window) fn follow_display(&mut self) {
         let Some(w) = self.win.as_mut() else { return };
-        let light = if self.hdr == Hdr::Off { None } else { w.native.display.read(&w.window, &self.native_handle).cloned() };
+        let light = if self.hdr == Hdr::Off { None } else { w.native.display.read(&w.window).cloned() };
         self.switch_output(self.hdr.output(light.as_ref()));
     }
 
@@ -63,7 +63,7 @@ impl Host {
         if renderer.output() == output { return; }
         let rt = self.app.rt_mut();
         let mut put = |output: Output| {
-            rt.set_linear_output(output.is_hdr());
+            rt.set_output(output);
             renderer.set_output(output);
             reconfigure_core(surface, gpu, &mut w.config, renderer, &mut w.alpha, rt)
         };
@@ -80,15 +80,7 @@ impl Host {
         if !ok { w.surface_ok = false; }
         log_output(self.native_handle.key(), output);
         w.request_redraw();
-        self.note_swap_chain();
-    }
-
-    /// Records what DXGI says about the window's swap chain for `WindowHandle::swap_chain`: once
-    /// it's set up, not per frame.
-    pub(in crate::window) fn note_swap_chain(&self) {
-        let Some(w) = self.win.as_ref() else { return };
-        let report = w.surface.as_ref().and_then(|s| crate::window::win32::display::swap_chain_report(s, w.config.color_space));
-        *self.native_handle.native.swap_chain.lock().unwrap() = report;
+        w.note_swap_chain();
     }
 }
 

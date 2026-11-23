@@ -3,6 +3,13 @@
 
 use super::{ATLAS_START_ROWS, Blend, CLIP_WGSL, Globals, Instance, Renderer, dxbc, metallib, variant, warmup::WarmRenderer};
 
+/// Where the frame projection (binding 3) sits in the globals buffer: the first offset past
+/// `Globals` that the device's uniform offset `alignment` allows (48 bytes of `Globals` sit at 64 on
+/// a 32-byte-aligned Vulkan or Metal device, at 256 on D3D12).
+pub(super) fn projection_offset(alignment: u32) -> u64 {
+    (std::mem::size_of::<Globals>() as u64).next_multiple_of(u64::from(alignment.max(1)))
+}
+
 impl Renderer {
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn new_warm(device: &wgpu::Device, format: wgpu::TextureFormat) -> WarmRenderer {
@@ -25,7 +32,7 @@ impl Renderer {
         };
         let globals = device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
-            size: u64::from(device.limits().min_uniform_buffer_offset_alignment).max(std::mem::size_of::<Globals>() as u64) + 16,
+            size: projection_offset(device.limits().min_uniform_buffer_offset_alignment) + 16,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -193,7 +200,7 @@ impl Renderer {
             wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&image_view) },
             wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                 buffer: target.unwrap_or(globals),
-                offset: if target.is_some() { 0 } else { u64::from(device.limits().min_uniform_buffer_offset_alignment).max(std::mem::size_of::<Globals>() as u64) },
+                offset: if target.is_some() { 0 } else { projection_offset(device.limits().min_uniform_buffer_offset_alignment) },
                 size: std::num::NonZeroU64::new(16),
             }) },
         ];
@@ -265,3 +272,7 @@ impl Renderer {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "pipelines_tests.rs"]
+mod tests;

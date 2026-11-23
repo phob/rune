@@ -21,9 +21,12 @@ use crate::window::hdr::{DisplayLight, SwapChainReport};
 
 const SUBCLASS: usize = 0x5255_4e44; // "RUND"
 
-/// The display a window is on, as it last read it.
+/// The display a window is on, as it last read it, and what DXGI said of its swap chain.
 #[derive(Default)]
 pub(in crate::window) struct DisplayWatch {
+    /// The window's handle: display changes wake its host, and `WindowHandle::swap_chain` reads
+    /// what `note_swap_chain` says. None only in a `Native` made before its window (a default).
+    handle: Option<WindowHandle>,
     /// The `HMONITOR` most of the window was on when it last read its display.
     monitor: isize,
     light: Option<DisplayLight>,
@@ -32,11 +35,15 @@ pub(in crate::window) struct DisplayWatch {
 }
 
 impl DisplayWatch {
+    pub(in crate::window) fn new(handle: WindowHandle) -> Self {
+        Self { handle: Some(handle), ..Self::default() }
+    }
+
     /// Reads the display most of `window` is on now, and starts hearing display changes the
-    /// first time: each sends `WakeEvent::Display` to `handle`'s host.
-    pub(in crate::window) fn read(&mut self, window: &winit::window::Window, handle: &WindowHandle) -> Option<&DisplayLight> {
+    /// first time: each sends `WakeEvent::Display` to the window's host.
+    pub(in crate::window) fn read(&mut self, window: &winit::window::Window) -> Option<&DisplayLight> {
         let hwnd = crate::platform::win32::hwnd(window)? as isize;
-        if !self.hears { self.hears = hear(hwnd, handle); }
+        if !self.hears && let Some(handle) = &self.handle { self.hears = hear(hwnd, handle); }
         self.monitor = display_light::monitor_of(hwnd);
         // A display that can't be read now keeps what it last read.
         self.light = test_light(display_light::window_display(hwnd).or(self.light.take()));
@@ -50,13 +57,27 @@ impl DisplayWatch {
     pub(in crate::window) fn moved(&self, window: &winit::window::Window) -> bool {
         crate::platform::win32::hwnd(window).is_some_and(|hwnd| display_light::monitor_of(hwnd as isize) != self.monitor)
     }
+
+    /// Records what DXGI says of `surface`'s swap chain, configured in `color_space`, for
+    /// `WindowHandle::swap_chain`: when it's configured, never per frame.
+    fn note_swap_chain(&self, surface: Option<&wgpu::Surface>, color_space: wgpu::SurfaceColorSpace) {
+        let Some(handle) = &self.handle else { return };
+        *handle.native.swap_chain.lock().unwrap() = surface.and_then(|s| swap_chain_report(s, color_space));
+    }
+}
+
+impl crate::window::surface::Win {
+    /// What DXGI says of the window's swap chain as configured now (`WindowHandle::swap_chain`).
+    pub(in crate::window) fn note_swap_chain(&self) {
+        self.native.display.note_swap_chain(self.surface.as_ref(), self.config.color_space);
+    }
 }
 
 /// `RUNE_HDR_SDR_WHITE=<nits>`: draws SDR white at `nits` whatever the slider says, for checking
 /// the SDR level on a display whose slider sits at 80 nits (scRGB 1.0, where a level applied
 /// twice or not at all looks the same).
 fn test_light(light: Option<DisplayLight>) -> Option<DisplayLight> {
-    let nits = std::env::var("RUNE_HDR_SDR_WHITE").ok().and_then(|v| v.trim().parse::<f32>().ok()).filter(|n| *n > 0.0);
+    let nits = std::env::var("RUNE_HDR_SDR_WHITE").ok().and_then(|v| v.trim().parse::<f32>().ok()).filter(|n| n.is_finite() && *n > 0.0);
     match (light, nits) {
         (Some(light), Some(nits)) => Some(DisplayLight { sdr_white_nits: Some(nits), ..light }),
         (light, _) => light,
@@ -95,7 +116,7 @@ unsafe extern "system" fn procedure(hwnd: HWND, msg: u32, w: usize, l: isize, _:
 
 /// What DXGI says about `surface`'s swap chain, configured in `color_space`; None for a surface
 /// that isn't a DX12 swap chain.
-pub(in crate::window) fn swap_chain_report(surface: &wgpu::Surface, color_space: wgpu::SurfaceColorSpace) -> Option<SwapChainReport> {
+fn swap_chain_report(surface: &wgpu::Surface, color_space: wgpu::SurfaceColorSpace) -> Option<SwapChainReport> {
     use windows::Win32::Graphics::Dxgi::Common::{DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709, DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020, DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709};
     // SAFETY: only the swap chain's description and colour space support are read.
     let hal = unsafe { surface.as_hal::<wgpu::hal::api::Dx12>() }?;

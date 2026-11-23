@@ -151,6 +151,8 @@ impl Win {
             eprintln!("rune: a window's surface refused its new size: {error}");
             self.surface_ok = false;
         }
+        #[cfg(target_os = "windows")]
+        self.note_swap_chain();
         if let Some(alpha) = &mut self.alpha { alpha.resize(&gpu.device, (width, height)); }
         #[cfg(target_os = "macos")]
         if let Some(shadow) = &self.native.shadow { shadow.redraw(); }

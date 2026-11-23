@@ -175,7 +175,7 @@ impl SurfaceRenderer {
                 }
             }
             let p = &mut self.draws[count];
-            p.punch = self.punch.is_some() && self.punched.contains(&key);
+            p.punch = self.punched.contains(&key);
             *p.isolated.get_mut() = false;
             count += 1;
         }
@@ -286,10 +286,12 @@ impl SurfaceRenderer {
         self.draws.iter().find(|d| d.surface.key() == key).map(|d| d.isolated.load(std::sync::atomic::Ordering::Relaxed))
     }
 
-    /// Draws `index` in the window's own pass: punched out when asked, else as any other.
+    /// Draws `index` in the window's own pass, which draws into `format`: punched out when asked
+    /// and the punch for `format` has compiled (`punch_ready`), else as any other.
     #[doc(hidden)]
     pub fn draw_main(&self, pass: &mut wgpu::RenderPass<'_>, index: usize, format: wgpu::TextureFormat, blend: Blend) {
-        match (&self.punch, self.draws[index].punch) {
+        let punch = self.punch.iter().find(|(f, _)| *f == format).map(|(_, p)| p);
+        match (punch, self.draws[index].punch) {
             (Some(punch), true) => {
                 self.draws[index].drawn.store(true, std::sync::atomic::Ordering::Relaxed);
                 pass.set_pipeline(punch);
@@ -515,20 +517,8 @@ fn bind_group(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, sampler: &w
 }
 
 #[cfg(test)]
-mod transfer_tests {
-    use super::*;
-
-    #[test]
-    fn sdr_pictures_take_sdr_white_and_scrgb_ones_pass_through() {
-        // An HDR window (linear blend) at 240 nits: SDR video at 3x, scRGB video untouched.
-        assert_eq!(transfer(false, Transfer::Srgb, 3.0), (0.0, 3.0));
-        assert_eq!(transfer(false, Transfer::Bt709, 3.0), (1.0, 3.0));
-        assert_eq!(transfer(false, Transfer::ScRgbLinear, 3.0), (3.0, 1.0));
-        // An sRGB-blended (SDR) window never scales: its SDR white is 1.
-        assert_eq!(transfer(true, Transfer::Srgb, 1.0), (2.0, 1.0));
-        assert_eq!(transfer(true, Transfer::ScRgbLinear, 1.0), (4.0, 1.0));
-    }
-}
+#[path = "frame_tests.rs"]
+mod transfer_tests;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod abi_tests {

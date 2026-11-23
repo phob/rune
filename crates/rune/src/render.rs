@@ -364,8 +364,12 @@ impl Renderer {
     /// drawn at `output.sdr_white()`, once, as they're shaded, and the clear colour with them;
     /// native surfaces of SDR video too, while HDR ones (scRGB) go through as they are. Set it
     /// with the target's format (`set_format`): an scRGB output draws into `Rgba16Float`
-    /// without sRGB blending.
+    /// without sRGB blending. A runtime drawing into the target is told the same light (the
+    /// window does this), so its `El::cache` layers, which hold their pixels at SDR white's
+    /// level, are drawn again at a new one.
     pub fn set_output(&mut self, output: Output) {
+        #[cfg(any(target_os = "windows", target_arch = "wasm32"))]
+        if self.output != output { self.kept_frame_behind(); }
         self.output = output;
     }
 

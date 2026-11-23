@@ -11,7 +11,7 @@ use windows::Win32::Devices::Display::{
     DISPLAYCONFIG_PATH_INFO, DISPLAYCONFIG_SDR_WHITE_LEVEL, DISPLAYCONFIG_SOURCE_DEVICE_NAME, DisplayConfigGetDeviceInfo,
     GetDisplayConfigBufferSizes, QDC_ONLY_ACTIVE_PATHS, QueryDisplayConfig,
 };
-use windows::Win32::Foundation::{ERROR_SUCCESS, HWND};
+use windows::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS, HWND};
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709, DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020};
 use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory1, DXGI_OUTPUT_DESC1, IDXGIFactory1, IDXGIOutput6};
 use windows::Win32::Graphics::Gdi::{MONITOR_DEFAULTTONEAREST, MonitorFromWindow};
@@ -43,6 +43,8 @@ pub(crate) fn displays() -> Vec<DisplayLight> {
 /// The display `hwnd` is on (the one most of it covers), as Windows reports it now.
 pub(crate) fn window_display(hwnd: isize) -> Option<DisplayLight> {
     let monitor = monitor_of(hwnd);
+    // No monitor (a window gone, or none attached): not an output DXGI reports without one.
+    if monitor == 0 { return None; }
     displays().into_iter().find(|d| d.monitor == monitor)
 }
 
@@ -52,38 +54,33 @@ pub(crate) fn monitor_of(hwnd: isize) -> isize {
     unsafe { MonitorFromWindow(HWND(hwnd as *mut _), MONITOR_DEFAULTTONEAREST) }.0 as isize
 }
 
-fn light(desc: &DXGI_OUTPUT_DESC1, whites: &[([u16; 32], f32)]) -> DisplayLight {
-    let name_end = desc.DeviceName.iter().position(|&c| c == 0).unwrap_or(desc.DeviceName.len());
+/// A fixed-size wide name, up to its NUL.
+fn wide(name: &[u16]) -> String {
+    String::from_utf16_lossy(&name[..name.iter().position(|&c| c == 0).unwrap_or(name.len())])
+}
+
+fn light(desc: &DXGI_OUTPUT_DESC1, whites: &[(String, f32)]) -> DisplayLight {
+    let name = wide(&desc.DeviceName);
     let r = desc.DesktopCoordinates;
     DisplayLight {
-        name: String::from_utf16_lossy(&desc.DeviceName[..name_end]),
         hdr: desc.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020 || desc.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709,
         color_space: desc.ColorSpace.0,
         bits_per_color: desc.BitsPerColor,
         min_nits: desc.MinLuminance,
         max_nits: desc.MaxLuminance,
         max_full_frame_nits: desc.MaxFullFrameLuminance,
-        sdr_white_nits: whites.iter().find(|(name, _)| *name == desc.DeviceName).map(|(_, nits)| *nits),
+        sdr_white_nits: whites.iter().find(|(n, _)| *n == name).map(|(_, nits)| *nits),
         primaries: [desc.RedPrimary, desc.GreenPrimary, desc.BluePrimary, desc.WhitePoint],
         bounds: [r.left, r.top, r.right, r.bottom],
         monitor: desc.Monitor.0 as isize,
+        name,
     }
 }
 
 /// Each active display's GDI name and SDR white level in nits. `SDRWhiteLevel` is in thousandths
 /// of scRGB's 80 nits (1000 is 80 nits).
-fn sdr_whites() -> Vec<([u16; 32], f32)> {
-    let (mut paths, mut modes) = (0u32, 0u32);
-    // SAFETY: both out-parameters are live; the call writes the buffer sizes into them.
-    if unsafe { GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &mut paths, &mut modes) } != ERROR_SUCCESS { return Vec::new(); }
-    let mut path_info = vec![DISPLAYCONFIG_PATH_INFO::default(); paths as usize];
-    let mut mode_info = vec![DISPLAYCONFIG_MODE_INFO::default(); modes as usize];
-    // SAFETY: the buffers have the counts passed with them, which bound the writes.
-    if unsafe { QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &mut paths, path_info.as_mut_ptr(), &mut modes, mode_info.as_mut_ptr(), None) } != ERROR_SUCCESS {
-        return Vec::new();
-    }
-    path_info.truncate(paths as usize);
-    path_info.iter().filter_map(|path| {
+fn sdr_whites() -> Vec<(String, f32)> {
+    active_paths().iter().filter_map(|path| {
         let mut source = DISPLAYCONFIG_SOURCE_DEVICE_NAME::default();
         source.header.r#type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
         source.header.size = size_of::<DISPLAYCONFIG_SOURCE_DEVICE_NAME>() as u32;
@@ -98,6 +95,26 @@ fn sdr_whites() -> Vec<([u16; 32], f32)> {
         white.header.id = path.targetInfo.id;
         // SAFETY: as above, for `white`.
         if unsafe { DisplayConfigGetDeviceInfo(&mut white.header) } != ERROR_SUCCESS.0 as i32 || white.SDRWhiteLevel == 0 { return None; }
-        Some((source.viewGdiDeviceName, white.SDRWhiteLevel as f32 / 1000.0 * crate::render::SCRGB_NITS))
+        Some((wide(&source.viewGdiDeviceName), white.SDRWhiteLevel as f32 / 1000.0 * crate::render::SCRGB_NITS))
     }).collect()
+}
+
+/// The display configuration's active paths. Displays can come and go between sizing the
+/// buffers and filling them (`WM_DISPLAYCHANGE` is sent while they do): then it sizes them again.
+fn active_paths() -> Vec<DISPLAYCONFIG_PATH_INFO> {
+    for _ in 0..4 {
+        let (mut paths, mut modes) = (0u32, 0u32);
+        // SAFETY: both out-parameters are live; the call writes the buffer sizes into them.
+        if unsafe { GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &mut paths, &mut modes) } != ERROR_SUCCESS { return Vec::new(); }
+        let mut path_info = vec![DISPLAYCONFIG_PATH_INFO::default(); paths as usize];
+        let mut mode_info = vec![DISPLAYCONFIG_MODE_INFO::default(); modes as usize];
+        // SAFETY: the buffers have the counts passed with them, which bound the writes.
+        let queried = unsafe { QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &mut paths, path_info.as_mut_ptr(), &mut modes, mode_info.as_mut_ptr(), None) };
+        if queried == ERROR_SUCCESS {
+            path_info.truncate(paths as usize);
+            return path_info;
+        }
+        if queried != ERROR_INSUFFICIENT_BUFFER { return Vec::new(); }
+    }
+    Vec::new()
 }

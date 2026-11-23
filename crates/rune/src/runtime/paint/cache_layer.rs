@@ -141,6 +141,8 @@ impl RuntimeCore {
             }
             (self.paint.srgb_blend, self.text.smoothing, self.text.families(), crate::text::icon::swap_id()).hash(&mut h);
             h.write_u32(s.to_bits());
+            // A cached layer's pixels hold SDR white's level (an HDR window's slider).
+            h.write_u32(self.paint.sdr_white().to_bits());
             sel_ranges.hash(&mut h);
             // A selection's colours follow the window's focus (`El::selection_style`).
             if !sel_ranges.is_empty() {
@@ -295,6 +297,8 @@ impl state::PaintState {
         // Blur is baked into the target, unlike opacity and clipping on the composite.
         h.write_u32(instances[start].params[2].to_bits());
         h.write_u8(self.srgb_blend as u8 | (text.smoothing as u8) << 1);
+        // The target holds its pixels at SDR white's level: another level draws it again.
+        h.write_u32(self.sdr_white().to_bits());
         h.write_u32(ac.cur_scale.to_bits());
         h.write_u32(ac.size[0].to_bits());
         h.write_u32(ac.size[1].to_bits());

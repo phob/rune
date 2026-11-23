@@ -142,10 +142,28 @@ pub(crate) fn target_format(config: &wgpu::SurfaceConfiguration, srgb_blend: boo
 pub(crate) fn window_config(surface: &wgpu::Surface, adapter: &wgpu::Adapter, size: (u32, u32), wanted: Output, rt: &mut RuntimeCore)
     -> Option<(wgpu::SurfaceConfiguration, Option<wgpu::CompositeAlphaMode>, Output)> {
     let output = output_for(surface, adapter, wanted);
-    rt.set_linear_output(output.is_hdr());
+    rt.set_output(output);
     let (mut config, translucent) = surface_config(surface, adapter, size, rt.srgb_blend())?;
     output_config(&mut config, output);
     Some((config, translucent, output))
+}
+
+/// Configures a window's `surface` as `config`, in `output`'s light. A surface that refuses scRGB
+/// on a device that's still there is put back in standard range, the runtime blending as the app
+/// asked again, and configured once more. The light it took, or why it refused.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub(crate) fn configure_window(surface: &wgpu::Surface, gpu: &Gpu, config: &mut wgpu::SurfaceConfiguration, output: Output, rt: &mut RuntimeCore)
+    -> Result<Output, String> {
+    let error = match configure(surface, gpu, config) {
+        Ok(()) => return Ok(output),
+        Err(error) if output.is_hdr() && !gpu.is_lost() => error,
+        Err(error) => return Err(error),
+    };
+    eprintln!("rune: a window's surface refused scRGB ({error}); it draws in standard range");
+    rt.set_output(Output::Sdr);
+    let Some((sdr, _)) = surface_config(surface, &gpu.adapter, (config.width, config.height), rt.srgb_blend()) else { return Err(error) };
+    (config.format, config.color_space, config.view_formats) = (sdr.format, sdr.color_space, sdr.view_formats);
+    configure(surface, gpu, config).map(|()| Output::Sdr)
 }
 
 /// Follows a blend switch (`Tx::set_srgb_blend`) or an output switch (`Renderer::set_output`,

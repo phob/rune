@@ -113,12 +113,15 @@ pub struct SurfaceRenderer {
     sampler: wgpu::Sampler,
     cache: HashMap<usize, Arc<Imported>>,
     draws: Vec<Prepared>,
-    /// Surfaces whose place is punched out (by key), and the pipeline that does it: the video's
-    /// coverage, opacity and clip, writing `dst * (1 - coverage)` to colour and alpha alike.
+    /// Surfaces whose place is punched out (by key), and the pipelines that do it, one per format
+    /// the window's pass has drawn into (an HDR switch changes it): the video's coverage, opacity
+    /// and clip, writing `dst * (1 - coverage)` to colour and alpha alike.
     punched: Vec<usize>,
-    punch: Option<wgpu::RenderPipeline>,
-    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
-    punch_building: Option<std::sync::mpsc::Receiver<wgpu::RenderPipeline>>,
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    punch: Vec<(wgpu::TextureFormat, wgpu::RenderPipeline)>,
+    /// The punch pipeline being compiled, and the format it's for.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    punch_building: Option<(wgpu::TextureFormat, std::sync::mpsc::Receiver<wgpu::RenderPipeline>)>,
     srgb_blend: bool,
     /// The level SDR pictures are drawn at (`set_sdr_white`).
     sdr_white: f32,
@@ -202,7 +205,7 @@ impl SurfaceRenderer {
         };
         let mut renderer = Self::with_pipeline(device, building.format, building.layout.clone(), pipeline);
         // The punch arrives on this later.
-        renderer.punch_building = building.punch.lock().unwrap().take();
+        renderer.punch_building = building.punch.lock().unwrap().take().map(|punch| (building.format, punch));
         Some(renderer)
     }
 
@@ -245,7 +248,7 @@ impl SurfaceRenderer {
             cache: HashMap::new(),
             draws: Vec::new(),
             punched: Vec::new(),
-            punch: None,
+            punch: Vec::new(),
             punch_building: None,
             srgb_blend: false,
             sdr_white: 1.0,
@@ -395,30 +398,32 @@ impl SurfaceRenderer {
         self.punched = keys;
     }
 
-    /// The punch pipeline has compiled. A renderer made without `build` starts compiling it here,
-    /// on a thread of its own as `build` does.
+    /// The punch pipeline for the window's pass drawing into `format` has compiled. One that
+    /// isn't there yet starts compiling here, on a thread of its own as `build` does, once the
+    /// one being compiled (for another format) has arrived.
     #[cfg(target_os = "windows")]
     #[doc(hidden)]
-    pub fn punch_ready(&mut self) -> bool {
-        if self.punch.is_some() {
+    pub fn punch_ready(&mut self, format: wgpu::TextureFormat) -> bool {
+        if let Some((built, receiver)) = &self.punch_building
+            && let Ok(pipeline) = receiver.try_recv()
+        {
+            self.punch.push((*built, pipeline));
+            self.punch_building = None;
+        }
+        if self.punch.iter().any(|(f, _)| *f == format) {
             return true;
         }
         if self.punch_building.is_none() {
             let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-            let (device, layout, format) = (self.device.clone(), self.layout.clone(), self.format);
+            let (device, layout) = (self.device.clone(), self.layout.clone());
             let spawned = std::thread::Builder::new()
                 .name("rune-video-punch".into())
                 .spawn(move || drop(sender.send(Self::pipeline_with(&device, &layout, format, PUNCH))));
-            if spawned.is_err() {
-                return false;
+            if spawned.is_ok() {
+                self.punch_building = Some((format, receiver));
             }
-            self.punch_building = Some(receiver);
         }
-        if let Some(p) = self.punch_building.as_ref().and_then(|b| b.try_recv().ok()) {
-            self.punch = Some(p);
-            self.punch_building = None;
-        }
-        self.punch.is_some()
+        false
     }
 }
 

@@ -76,9 +76,10 @@ impl WindowHandle {
     /// The window's frame counts: redraws, presents, failed drawable acquisitions, loop turns
     /// and pacing: current totals, and per-second rates updated once a second while it draws.
     pub fn surface_stats(&self) -> SurfaceStats { crate::frame::surface_stats::read(&self.native.stats) }
-    /// What DXGI says about the window's swap chain (format, buffers, the colour space Rune set
-    /// and whether it presents) as its opening or its last output switch (`App::hdr`) left it.
-    /// None before then, and off Windows.
+    /// What DXGI says about the window's swap chain (format, size, buffers, the colour space Rune
+    /// set and whether it presents) as its last configuration left it: for tools and tests. None
+    /// before then, and off Windows.
+    #[doc(hidden)]
     pub fn swap_chain(&self) -> Option<crate::window::hdr::SwapChainReport> { *self.native.swap_chain.lock().unwrap() }
     pub(super) fn window(&self) -> Result<Arc<Window>, String> {
         self.native.window.lock().unwrap().upgrade().ok_or_else(|| "window is closed".into())

@@ -23,11 +23,12 @@ impl RuntimeCore {
         self.paint.srgb_blend()
     }
 
-    /// The window's target holds extended-range linear light (scRGB, `App::hdr`) from the next
-    /// frame (`on`), or what `set_srgb_blend` asks again: frames blend in linear light while it
-    /// does, and every colour is premultiplied linear.
-    pub(crate) fn set_linear_output(&mut self, on: bool) {
-        if self.paint.set_linear_output(on) {
+    /// The light the window's target holds from the next frame (`App::hdr`): in scRGB frames
+    /// blend in linear light and every colour is premultiplied linear, whatever
+    /// `set_srgb_blend` asks; in standard range they blend as it asks again. `El::cache` layers
+    /// drawn at another SDR white draw again.
+    pub(crate) fn set_output(&mut self, output: crate::render::Output) {
+        if self.paint.set_output(output) {
             self.commit.dirty = true;
         }
     }

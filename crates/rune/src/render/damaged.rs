@@ -157,6 +157,12 @@ impl Renderer {
         Ok(rects)
     }
 
+    /// The kept frame was drawn in another light (`Renderer::set_output`): the next armed frame
+    /// draws whole into it before it redraws any rectangle alone.
+    pub(super) fn kept_frame_behind(&self) {
+        if let Some(r) = self.damage.lock().unwrap().retained.as_mut() { r.current = false; }
+    }
+
     /// The armed frame redraws its rectangles over a current kept frame, and no layer is among
     /// what it draws there: `prepare` leaves the layers as the last frame planned and drew them.
     pub(super) fn cycle_leaves_layers(&self) -> bool {

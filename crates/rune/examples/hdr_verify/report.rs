@@ -24,6 +24,9 @@ pub struct Case {
     env: &'static [(&'static str, &'static str)],
     /// The policy the window opens with (`App::hdr`; `RUNE_HDR` overrides it).
     pub open: Hdr,
+    /// `App::srgb_blend`: false keeps the blend the same across an SDR / scRGB switch, so only
+    /// SDR white tells an `El::cache` layer's pixels apart.
+    pub srgb_blend: bool,
     pub phases: &'static [Phase],
 }
 
@@ -40,19 +43,25 @@ pub struct Phase {
 
 const SCRGB_PHASE: &[Phase] = &[Phase { name: "scrgb", ask: None, hdr: true, white: None }];
 
-pub const CASES: [Case; 4] = [
-    Case { name: "scrgb_live", env: &[("RUNE_HDR", "1")], open: Hdr::On, phases: SCRGB_PHASE },
-    Case { name: "scrgb_240_nits", env: &[("RUNE_HDR", "1"), ("RUNE_HDR_SDR_WHITE", "240")], open: Hdr::On,
+/// Opens in standard range, switches its swap chain to scRGB while it runs (SDR white at 240
+/// nits), then back.
+const SWITCH: &[Phase] = &[
+    Phase { name: "opened_sdr", ask: None, hdr: false, white: Some(1.0) },
+    Phase { name: "switched_to_scrgb", ask: Some(Hdr::On), hdr: true, white: Some(3.0) },
+    Phase { name: "switched_back_to_sdr", ask: Some(Hdr::Off), hdr: false, white: Some(1.0) },
+];
+
+pub const CASES: [Case; 5] = [
+    Case { name: "scrgb_live", env: &[("RUNE_HDR", "1")], open: Hdr::On, srgb_blend: true, phases: SCRGB_PHASE },
+    Case { name: "scrgb_240_nits", env: &[("RUNE_HDR", "1"), ("RUNE_HDR_SDR_WHITE", "240")], open: Hdr::On, srgb_blend: true,
         phases: &[Phase { name: "scrgb", ask: None, hdr: true, white: Some(3.0) }] },
-    Case { name: "sdr_fallback", env: &[("RUNE_HDR", "0")], open: Hdr::On,
+    Case { name: "sdr_fallback", env: &[("RUNE_HDR", "0")], open: Hdr::On, srgb_blend: true,
         phases: &[Phase { name: "sdr", ask: None, hdr: false, white: Some(1.0) }] },
-    // Opens in standard range (CPU first frame, then the GPU hand-over), switches its swap chain
-    // to scRGB while it runs, then back.
-    Case { name: "runtime_switch", env: &[("RUNE_HDR_SDR_WHITE", "240")], open: Hdr::Off, phases: &[
-        Phase { name: "opened_sdr", ask: None, hdr: false, white: Some(1.0) },
-        Phase { name: "switched_to_scrgb", ask: Some(Hdr::On), hdr: true, white: Some(3.0) },
-        Phase { name: "switched_back_to_sdr", ask: Some(Hdr::Off), hdr: false, white: Some(1.0) },
-    ] },
+    // The CPU first frame, then the GPU hand-over, then the switches.
+    Case { name: "runtime_switch", env: &[("RUNE_HDR_SDR_WHITE", "240")], open: Hdr::Off, srgb_blend: true, phases: SWITCH },
+    // As above in a window that blends in linear light either way: what tells the `El::cache`
+    // layer's old pixels from its new ones is SDR white alone.
+    Case { name: "runtime_switch_linear", env: &[("RUNE_HDR_SDR_WHITE", "240")], open: Hdr::Off, srgb_blend: false, phases: SWITCH },
 ];
 
 /// The case named `name`.
@@ -135,6 +144,11 @@ pub fn verify(out: &Path) -> i32 {
     i32::from(failed != 0)
 }
 
+/// No instance draws at the background sample: the pixel is `LoadOp::Clear`'s.
+fn clear_only(r: &Value) -> bool {
+    r["regions"]["ui_background"]["covering_instances"].as_u64() == Some(0)
+}
+
 struct Check {
     name: String,
     passed: bool,
@@ -169,6 +183,13 @@ fn check(phase: &Phase, r: &Value) -> Vec<Check> {
         add("SDR fallback: UI white at 1.0", near(ui[0], 1.0, 0.002), format!("{:.4}", ui[0]));
         let distinct = r["ramp"]["distinct_values_in_0_1"].as_u64().unwrap_or(0);
         add("SDR fallback ramp is 8-bit (<= 256 levels)", distinct <= 256, format!("{distinct} distinct values"));
+        let cached = mean("ui_cached_white_swatch");
+        add("SDR fallback: El::cache white swatch at 1.0", near(cached[0], 1.0, 0.002), format!("{:.4}", cached[0]));
+        // An 8-bit swap chain holds the clear colour sRGB-encoded.
+        let bg = mean("ui_background");
+        let want_bg = f64::from(rune::color::srgb_encode(crate::BACKGROUND_LINEAR));
+        add("SDR fallback: window background is the clear colour alone", clear_only(r) && (bg[0] - want_bg).abs() <= 1.5 / 255.0,
+            format!("{:.4} (want {want_bg:.4}), {} instances cover it", bg[0], r["regions"]["ui_background"]["covering_instances"]));
         return out;
     }
     add("swap chain is DXGI_FORMAT_R16G16B16A16_FLOAT (IDXGISwapChain1::GetDesc1)", format == FP16,
@@ -199,7 +220,11 @@ fn check(phase: &Phase, r: &Value) -> Vec<Check> {
         format!("rgba {:.4} {:.4} {:.4} {:.4} (want {white:.4}; squared would be {:.4})", ui[0], ui[1], ui[2], ui[3], white * white));
     let bg = mean("ui_background");
     let want_bg = f64::from(crate::BACKGROUND_LINEAR) * white;
-    add("window background (clear colour) at the SDR white level", (0..3).all(|c| near(bg[c], want_bg, 0.02)), format!("{:.5} (want {want_bg:.5})", bg[0]));
+    add("window background is the clear colour alone (LoadOp::Clear) at the SDR white level", clear_only(r) && (0..3).all(|c| near(bg[c], want_bg, 0.02)),
+        format!("{:.5} (want {want_bg:.5}), {} instances cover it", bg[0], r["regions"]["ui_background"]["covering_instances"]));
+    let cached = mean("ui_cached_white_swatch");
+    add("El::cache white swatch drawn at the SDR white level (not its old pixels)", (0..3).all(|c| near(cached[c], white, 0.003)),
+        format!("{:.4} (want {white:.4})", cached[0]));
     let hud = mean("hud_frosted_over_1000_nits");
     let want_hud = 12.5 * (1.0 - f64::from(HUD_TINT)) + f64::from(HUD_TINT) * white;
     add("frosted HUD over the 1000-nit patch stays above 1.0, blended in linear light",

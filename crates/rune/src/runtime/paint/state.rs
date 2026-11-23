@@ -14,10 +14,11 @@ pub(crate) struct PaintState {
     pub(super) quads_frame: u64,
     /// Gamma-space (sRGB) blending for translucent fills, shadows and blurs, as frames draw:
     /// what the app asked (`srgb_requested`), unless the window's target holds linear light
-    /// (`linear_output`, an HDR window's scRGB), which blends in linear light whatever was asked.
+    /// (`output`, an HDR window's scRGB), which blends in linear light whatever was asked.
     pub(in crate::runtime) srgb_blend: bool,
     srgb_requested: bool,
-    linear_output: bool,
+    /// The light the window's target holds: an `El::cache` layer's pixels hold its SDR white.
+    output: crate::render::Output,
     /// The shell shows native views for the first `MAX_NATIVE_MATERIALS` of `materials`; their
     /// elements skip their fill and cut their shadows out of their interior.
     pub(super) native_materials: bool,
@@ -109,7 +110,7 @@ impl PaintState {
             quads_frame: 0,
             srgb_blend: false,
             srgb_requested: false,
-            linear_output: false,
+            output: crate::render::Output::Sdr,
             native_materials: false,
             videos_active: false,
             animated_icons: false,
@@ -172,16 +173,24 @@ impl PaintState {
         self.settle_blend()
     }
 
-    /// The window's target holds linear light (`on`, an HDR window's scRGB) or not; true when
-    /// the blend frames draw with changed.
+    /// The light the window's target holds; true when frames draw differently for it: their
+    /// blend (scRGB blends in linear light) or the SDR white cached layers hold.
     #[inline]
-    pub(in crate::runtime) fn set_linear_output(&mut self, on: bool) -> bool {
-        self.linear_output = on;
-        self.settle_blend()
+    pub(in crate::runtime) fn set_output(&mut self, output: crate::render::Output) -> bool {
+        let white = self.output.sdr_white() != output.sdr_white();
+        self.output = output;
+        self.settle_blend() | white
+    }
+
+    /// The level SDR colours are drawn at in the window's target (`render::Output`), which an
+    /// `El::cache` layer's pixels keep.
+    #[inline]
+    pub(in crate::runtime) fn sdr_white(&self) -> f32 {
+        self.output.sdr_white()
     }
 
     fn settle_blend(&mut self) -> bool {
-        let blend = self.srgb_requested && !self.linear_output;
+        let blend = self.srgb_requested && !self.output.is_hdr();
         let changed = self.srgb_blend != blend;
         self.srgb_blend = blend;
         changed

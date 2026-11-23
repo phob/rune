@@ -25,7 +25,7 @@ use crate::window::surface::native;
 use crate::window::surface::win;
 use crate::window::surface::{
     Backoff, BackoffEvent, HiddenPace, LoopFrame, Native, Redraw, SurfaceRetries, SurfaceStep,
-    SURFACE_TRIES, TimerFrame, Win, configure, drawable_size, max_surface_dim,
+    SURFACE_TRIES, TimerFrame, Win, configure_window, drawable_size, max_surface_dim,
     rebuild_renderer_core, target_format, window_config,
 };
 #[cfg(target_os = "windows")]
@@ -89,7 +89,7 @@ impl Host {
         let cloak = crate::platform::win32::Cloak::default();
         // `App::hdr`: the display it opens on, and the light that asks for.
         #[cfg(target_os = "windows")]
-        let mut display = crate::window::win32::display::DisplayWatch::default();
+        let mut display = crate::window::win32::display::DisplayWatch::new(self.native_handle.clone());
         #[cfg(target_os = "windows")]
         let wanted = self.opening_output(&mut display, &window);
         #[cfg(not(target_os = "windows"))]
@@ -223,14 +223,24 @@ impl Host {
         rebuild_renderer_core(&gpu.device, renderer, target_format, self.app.rt_mut());
         // A refused configuration (the driver's, or a device that is gone) leaves a surface
         // wgpu panics on its next drawable: the window closes, and the next open makes both.
-        let refused = configure(&surface, gpu, &config).err().map(|error| (gpu.is_lost(), error));
-        if let Some((lost, error)) = refused {
-            if lost {
-                self.gpu = None;
-                *self.gpu_pool.borrow_mut() = Weak::default();
+        // One that refused scRGB alone draws in standard range.
+        let configured = configure_window(&surface, gpu, &mut config, output, self.app.rt_mut());
+        let output = match configured {
+            Ok(got) => got,
+            Err(error) => {
+                if gpu.is_lost() {
+                    self.gpu = None;
+                    *self.gpu_pool.borrow_mut() = Weak::default();
+                }
+                return Err(format!("the window's GPU surface refused its configuration: {error}"));
             }
-            return Err(format!("the window's GPU surface refused its configuration: {error}"));
-        }
+        };
+        let target_format = if renderer.output() == output { target_format } else {
+            let target = crate::window::surface::target_format(&config, self.app.rt().srgb_blend());
+            renderer.set_output(output);
+            rebuild_renderer_core(&gpu.device, renderer, target, self.app.rt_mut());
+            target
+        };
         crate::marks::mark("gpu.surface");
         #[cfg(target_os = "macos")]
         crate::platform::macos::pin_contents_top_left(&surface);
@@ -323,7 +333,7 @@ impl Host {
         });
         if launcher { self.win.as_mut().unwrap().first_frame.prepare(crate::time::now()); }
         #[cfg(target_os = "windows")]
-        self.note_swap_chain();
+        if let Some(w) = &self.win { w.note_swap_chain(); }
         self.apply_placement(event_loop);
         #[cfg(target_os = "macos")]
         if visible && let Some(w) = &mut self.win && w.native.panel.is_some() { w.show(focus); }
@@ -467,16 +477,15 @@ impl Host {
         let wanted = Output::Sdr;
         let (mut config, translucent, output) = window_config(&surface, &gpu.adapter, size, wanted, self.app.rt_mut())
             .ok_or("the GPU adapter can't present to this window")?;
-        let srgb_blend = self.app.rt().srgb_blend();
         let client_frame = self.client_frame(&window);
         if transparent || client_frame {
             config.alpha_mode = alpha_mode(transparent, client_frame, translucent);
         }
         // A surface that fell back to opaque draws an opaque window, as the first one did.
         self.app.rt_mut().transparent = transparent && config.alpha_mode != wgpu::CompositeAlphaMode::Opaque;
-        if let Err(error) = configure(&surface, &gpu, &config) {
-            return Err(format!("the new GPU surface refused its configuration: {error}"));
-        }
+        let output = configure_window(&surface, &gpu, &mut config, output, self.app.rt_mut())
+            .map_err(|error| format!("the new GPU surface refused its configuration: {error}"))?;
+        let srgb_blend = self.app.rt().srgb_blend();
         let target_format = target_format(&config, srgb_blend);
         let mut renderer = prewarmed.unwrap_or_else(|| Renderer::new(&gpu.device, target_format));
         renderer.set_srgb_blend(srgb_blend);
@@ -507,9 +516,9 @@ impl Host {
         }
         *self.gpu_pool.borrow_mut() = Arc::downgrade(&gpu);
         crate::render::surface_gpu(&gpu);
-        self.gpu = Some((gpu, renderer));
         #[cfg(target_os = "windows")]
-        self.note_swap_chain();
+        w.note_swap_chain();
+        self.gpu = Some((gpu, renderer));
         Ok(())
     }
 
@@ -543,7 +552,7 @@ impl Host {
         let surface = unsafe { gpu.instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::CompositionVisual(visual)) }.map_err(|e| e.to_string())?;
         let mut config = w.config.clone();
         config.alpha_mode = alpha;
-        configure(&surface, gpu, &config)?;
+        crate::window::surface::configure(&surface, gpu, &config)?;
         w.surface = Some(surface);
         w.config = config;
         w.surface_ok = true;
@@ -551,6 +560,7 @@ impl Host {
         w.native.slot.reset();
         w.native.damage.reset();
         w.native.mode.rebind();
+        w.note_swap_chain();
         Ok(true)
     }
 

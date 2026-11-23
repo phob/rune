@@ -255,20 +255,14 @@ impl Importer {
     }
 
     /// Copies `frame` into a texture of Rune's own, once its ready fence (if it names one) says
-    /// it's written, then signals its release fence.
+    /// it's written, then signals its release fence: whether or not the copy happened, so a frame
+    /// Rune can't read never holds the producer up.
     pub fn import(&mut self, queue: &wgpu::Queue, frame: &SharedTexture) -> Result<[wgpu::Texture; 2], String> {
         let fence = match &frame.release {
             Some((name, value)) => Some((self.fence(name)?, *value)),
             None => None,
         };
-        if let Some((name, value)) = &frame.ready {
-            let ready = self.fence(name)?;
-            // SAFETY: the raw queue only gets a wait, ordered before the copy's submission below.
-            let hal = unsafe { queue.as_hal::<Dx12>() }.ok_or("shared textures need wgpu's D3D12 backend")?;
-            // SAFETY: as above; `ready` is a live shared fence opened on this device.
-            unsafe { hal.as_raw().Wait(&ready, *value) }.map_err(|e| format!("wait for the producer: {e}"))?;
-        }
-        let copied = self.copy(queue, frame);
+        let copied = self.wait_and_copy(queue, frame);
         if let Some((fence, value)) = fence {
             // After the copy's submission (or at once if it failed), so the producer never waits
             // on a frame Rune gave up on.
@@ -285,14 +279,31 @@ impl Importer {
         self.planes.retain(|(_, live, _)| live.strong_count() > 0);
     }
 
-    fn copy(&mut self, queue: &wgpu::Queue, frame: &SharedTexture) -> Result<[wgpu::Texture; 2], String> {
+    /// Opens and checks `frame`'s texture and ready fence before the queue waits for anything,
+    /// then has it wait for the fence and copies the texture.
+    fn wait_and_copy(&mut self, queue: &wgpu::Queue, frame: &SharedTexture) -> Result<[wgpu::Texture; 2], String> {
         let [width, height] = frame.size;
         let resource = self.texture(&frame.name, width, height, frame.format)?;
+        let ready = match &frame.ready {
+            Some((name, value)) => Some((self.fence(name)?, *value)),
+            None => None,
+        };
+        if let Some((ready, value)) = ready {
+            // SAFETY: the raw queue only gets a wait, ordered before the copy's submission below.
+            let hal = unsafe { queue.as_hal::<Dx12>() }.ok_or("shared textures need wgpu's D3D12 backend")?;
+            // SAFETY: as above; `ready` is a live shared fence opened on this device.
+            unsafe { hal.as_raw().Wait(&ready, value) }.map_err(|e| format!("wait for the producer: {e}"))?;
+        }
+        self.copy(queue, frame, resource)
+    }
+
+    fn copy(&self, queue: &wgpu::Queue, frame: &SharedTexture, resource: ID3D12Resource) -> Result<[wgpu::Texture; 2], String> {
+        let [width, height] = frame.size;
         let format = frame.format.texture_format();
         let mut desc = pipeline::descriptor(width, height, format);
         desc.usage = wgpu::TextureUsages::COPY_SRC;
-        // SAFETY: `resource` was opened on this device and checked to be a 2D, single-mip,
-        // single-sample texture of `desc`'s format and size.
+        // SAFETY: `resource` comes from `texture`, which opened it on this device and checked it
+        // `fits`: a 2D, single-mip, single-sample texture of `desc`'s format and size.
         let hal = unsafe {
             wgpu::hal::dx12::Device::texture_from_raw(
                 resource,
@@ -320,21 +331,18 @@ impl Importer {
         Ok([owned.clone(), owned])
     }
 
+    /// The texture shared under `name`, checked to be a 2D, single-mip, single-sample `width` x
+    /// `height` texture of `format`: the one opened before when it still is, else opened again (a
+    /// producer that makes a texture of another size or format under the same name).
     fn texture(&mut self, name: &str, width: u32, height: u32, format: SharedFormat) -> Result<ID3D12Resource, String> {
-        if let Some((_, resource)) = self.textures.iter().find(|(n, _)| n == name) {
-            return Ok(resource.clone());
+        if let Some(at) = self.textures.iter().position(|(n, _)| n == name) {
+            if fits(&self.textures[at].1, width, height, format) {
+                return Ok(self.textures[at].1.clone());
+            }
+            self.textures.remove(at);
         }
         let resource: ID3D12Resource = self.open(name)?;
-        // SAFETY: a plain query on a live resource.
-        let desc = unsafe { resource.GetDesc() };
-        if desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D
-            || desc.Width != u64::from(width)
-            || desc.Height != height
-            || desc.DepthOrArraySize != 1
-            || desc.MipLevels != 1
-            || desc.SampleDesc.Count != 1
-            || desc.Format != format.dxgi()
-        {
+        if !fits(&resource, width, height, format) {
             return Err(format!("shared texture {name:?} isn't a {width}x{height} {format:?} texture"));
         }
         remember(&mut self.textures, name, resource.clone());
@@ -375,6 +383,20 @@ pub(crate) fn release_decoded(queue: &wgpu::Queue, planes: &DecodedPlanes, value
         // SAFETY: as above; the fence is live and belongs to this device.
         unsafe { raw.as_raw().Signal(&planes.fences.release, value) }.ok();
     }
+}
+
+/// Whether `resource` is a 2D, single-mip, single-sample `width` x `height` texture of `format`:
+/// what `Importer::copy` wraps it as.
+fn fits(resource: &ID3D12Resource, width: u32, height: u32, format: SharedFormat) -> bool {
+    // SAFETY: a plain query on a live resource.
+    let desc = unsafe { resource.GetDesc() };
+    desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D
+        && desc.Width == u64::from(width)
+        && desc.Height == height
+        && desc.DepthOrArraySize == 1
+        && desc.MipLevels == 1
+        && desc.SampleDesc.Count == 1
+        && desc.Format == format.dxgi()
 }
 
 /// Keeps `value` under `name`, dropping the oldest past [`OPENED`].

@@ -394,6 +394,7 @@ pub use video::Video;
 pub use window::WindowHandle;
 pub use window::hdr::DisplayLight;
 pub use window::hdr::Hdr;
+#[doc(hidden)]
 pub use window::hdr::SwapChainReport;
 pub use window::hdr::display_lights;
 pub use window::spec as windows;
