@@ -307,6 +307,7 @@ fn analyze(device: &wgpu::Device, r: &Readback, output: rune::render::Output, ha
         "backbuffer": r.backbuffer,
         "producer": {
             "adapter": stats.adapter,
+            "vendor_id": stats.vendor_id,
             "luid": [stats.luid.0, stats.luid.1],
             "texture_format": stats.texture_format,
             "textures": stats.textures,

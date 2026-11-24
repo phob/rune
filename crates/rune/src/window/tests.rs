@@ -813,6 +813,32 @@ fn the_surface_alpha_mode_follows_what_the_window_asked_for() {
     }
 }
 
+/// An opaque window on an NVIDIA adapter (G-SYNC, `handover::vrr_guard`) takes premultiplied alpha
+/// where its surface has it, whether the CPU handed it over or the GPU drew it from its first frame,
+/// and stays opaque, never straight alpha, where it doesn't. Other vendors' windows stay opaque.
+#[cfg(target_os = "windows")]
+#[test]
+fn an_opaque_window_on_a_g_sync_adapter_takes_premultiplied_alpha() {
+    use crate::window::host::create::alpha_mode;
+    use crate::window::win32::handover::vrr_guard;
+    use wgpu::CompositeAlphaMode::{Inherit, Opaque, PostMultiplied, PreMultiplied};
+    const NVIDIA: u32 = 0x10DE;
+    const OTHERS: [u32; 3] = [0x1002, 0x8086, 0x1414]; // AMD, Intel, Microsoft (WARP)
+
+    assert!(vrr_guard(NVIDIA));
+    let surface_alpha = |vendor, supports| alpha_mode(false, vrr_guard(vendor), supports);
+    assert_eq!(surface_alpha(NVIDIA, Some(PreMultiplied)), PreMultiplied);
+    for supports in [Some(PostMultiplied), Some(Inherit), None] {
+        assert_eq!(surface_alpha(NVIDIA, supports), Opaque, "NVIDIA, {supports:?}");
+    }
+    for vendor in OTHERS {
+        assert!(!vrr_guard(vendor), "{vendor:#x}");
+        for supports in [Some(PreMultiplied), Some(PostMultiplied), None] {
+            assert_eq!(surface_alpha(vendor, supports), Opaque, "{vendor:#x}, {supports:?}");
+        }
+    }
+}
+
 /// A square window (maximized, tiled or fullscreen) never asks the corner pass to draw, whatever
 /// state the pass is in.
 #[test]

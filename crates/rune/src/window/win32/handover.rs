@@ -559,8 +559,9 @@ fn lower_priority() {
 /// (hex#689). A premultiplied DirectComposition swap chain keeps G-SYNC off (measured on that
 /// hardware, as reported there). It costs DWM a blend of the regions the window
 /// presents, and nothing while it rests. A fixed-rate display (blade's Iris panel) needs nothing:
-/// its refresh doesn't depend on who presents.
-fn vrr_guard(vendor: u32) -> bool { vendor == 0x10DE }
+/// its refresh doesn't depend on who presents. A window the GPU draws from its first frame takes
+/// the same alpha in its first configuration (`host::create::holds_fixed_refresh`).
+pub(in crate::window) fn vrr_guard(vendor: u32) -> bool { vendor == 0x10DE }
 
 #[cfg(test)]
 #[path = "handover_tests.rs"]

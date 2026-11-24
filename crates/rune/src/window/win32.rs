@@ -11,3 +11,6 @@ pub(in crate::window) mod look;
 pub(in crate::window) mod post_frame;
 pub(crate) mod slot;
 pub(in crate::window) mod video_layer;
+
+#[cfg(test)]
+mod surface_alpha_tests;

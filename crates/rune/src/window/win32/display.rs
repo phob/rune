@@ -116,7 +116,7 @@ unsafe extern "system" fn procedure(hwnd: HWND, msg: u32, w: usize, l: isize, _:
 
 /// What DXGI says about `surface`'s swap chain, configured in `color_space`; None for a surface
 /// that isn't a DX12 swap chain.
-fn swap_chain_report(surface: &wgpu::Surface, color_space: wgpu::SurfaceColorSpace) -> Option<SwapChainReport> {
+pub(super) fn swap_chain_report(surface: &wgpu::Surface, color_space: wgpu::SurfaceColorSpace) -> Option<SwapChainReport> {
     use windows::Win32::Graphics::Dxgi::Common::{DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709, DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020, DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709};
     // SAFETY: only the swap chain's description and colour space support are read.
     let hal = unsafe { surface.as_hal::<wgpu::hal::api::Dx12>() }?;

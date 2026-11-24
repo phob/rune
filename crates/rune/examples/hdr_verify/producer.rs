@@ -30,6 +30,8 @@ const RING: usize = 3;
 #[derive(Clone, Debug, Default)]
 pub struct Stats {
     pub adapter: String,
+    /// `DXGI_ADAPTER_DESC1::VendorId` of Rune's adapter (0x10DE is NVIDIA).
+    pub vendor_id: u32,
     pub luid: (i32, u32),
     pub texture_format: &'static str,
     pub textures: Vec<String>,
@@ -176,6 +178,7 @@ impl Producer {
             let release = fence(format!("{base}-read"))?;
             *stats.lock().unwrap() = Stats {
                 adapter: String::from_utf16_lossy(&desc.Description[..name_end]),
+                vendor_id: desc.VendorId,
                 luid,
                 texture_format: "DXGI_FORMAT_R16G16B16A16_FLOAT",
                 textures: ring.iter().map(|s| s.name.clone()).collect(),

@@ -199,9 +199,10 @@ impl Host {
         let launch_drawables = LaunchDrawables::cap(&mut config);
         // A window with a client-side frame keeps its pixels' alpha for the frame's corner arcs;
         // one under a compositor that draws the decorations itself keeps the surface it always had.
-        let client_frame = self.client_frame(&window);
-        if self.options.transparent || client_frame {
-            config.alpha_mode = alpha_mode(self.options.transparent, client_frame, translucent);
+        // An opaque one on a G-SYNC adapter composites premultiplied too (`holds_fixed_refresh`).
+        let premultiplied_only = self.client_frame(&window) || holds_fixed_refresh(&active_gpu.adapter);
+        if self.options.transparent || premultiplied_only {
+            config.alpha_mode = alpha_mode(self.options.transparent, premultiplied_only, translucent);
         }
         if self.options.transparent {
             if config.alpha_mode == wgpu::CompositeAlphaMode::Opaque {
@@ -477,9 +478,9 @@ impl Host {
         let wanted = Output::Sdr;
         let (mut config, translucent, output) = window_config(&surface, &gpu.adapter, size, wanted, self.app.rt_mut())
             .ok_or("the GPU adapter can't present to this window")?;
-        let client_frame = self.client_frame(&window);
-        if transparent || client_frame {
-            config.alpha_mode = alpha_mode(transparent, client_frame, translucent);
+        let premultiplied_only = self.client_frame(&window) || holds_fixed_refresh(&gpu.adapter);
+        if transparent || premultiplied_only {
+            config.alpha_mode = alpha_mode(transparent, premultiplied_only, translucent);
         }
         // A surface that fell back to opaque draws an opaque window, as the first one did.
         self.app.rt_mut().transparent = transparent && config.alpha_mode != wgpu::CompositeAlphaMode::Opaque;
@@ -617,29 +618,45 @@ impl Host {
     }
 }
 
-/// The surface alpha mode for a window that asked for `transparent`, and/or has a client-side frame
-/// whose corner arcs the content fades out of, given the modes the surface `supports` (the first
-/// that composites translucent pixels, or none).
+/// The surface alpha mode for a window that asked for `transparent`, or that is opaque but wants
+/// a `premultiplied_only` surface (a client-side frame whose corner arcs the content fades out of,
+/// or `holds_fixed_refresh`), given the modes the surface `supports` (the first that composites
+/// translucent pixels, or none).
 ///
 /// An app that asked for a translucent window takes whatever the surface offers, straight alpha
 /// included: that is the mode it had before the frame existed, and Metal offers only
-/// `PostMultiplied`, which `alpha_pass` converts. A window that only needs its corner pixels
-/// transparent takes `PreMultiplied` alone, the one mode the in-place fade can scale, and is
-/// `Opaque` — square corners — when the surface has nothing else.
+/// `PostMultiplied`, which `alpha_pass` converts. A window that only wants premultiplied alpha
+/// takes `PreMultiplied` alone, the one mode the in-place corner fade can scale and the one that
+/// keeps G-SYNC off, and is `Opaque` when the surface has nothing else.
 pub(crate) fn alpha_mode(
     transparent: bool,
-    client_frame: bool,
+    premultiplied_only: bool,
     supports: Option<wgpu::CompositeAlphaMode>,
 ) -> wgpu::CompositeAlphaMode {
     if transparent {
         return supports.unwrap_or(wgpu::CompositeAlphaMode::Opaque);
     }
-    if !client_frame {
+    if !premultiplied_only {
         return wgpu::CompositeAlphaMode::Opaque;
     }
     match supports {
         Some(wgpu::CompositeAlphaMode::PreMultiplied) => wgpu::CompositeAlphaMode::PreMultiplied,
         _ => wgpu::CompositeAlphaMode::Opaque,
+    }
+}
+
+/// Whether an opaque window drawn on `adapter` still takes a premultiplied surface, its pixels
+/// all opaque, so the display's refresh rate doesn't follow its presents (`handover::vrr_guard`).
+/// A window the CPU handed over holds it through its video layers once handed; this is the same
+/// hold for one the GPU draws from its first frame (an scRGB window, a second window) and for a
+/// surface made again. Never elsewhere: only Windows has the guard.
+pub(in crate::window) fn holds_fixed_refresh(adapter: &wgpu::Adapter) -> bool {
+    #[cfg(target_os = "windows")]
+    return handover::vrr_guard(adapter.get_info().vendor);
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = adapter;
+        false
     }
 }
 

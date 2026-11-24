@@ -17,6 +17,9 @@ const BGRA8: i64 = 87;
 /// `DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709` (scRGB), `..._G22_NONE_P709` (sRGB).
 const SCRGB: i64 = 1;
 const SRGB: i64 = 0;
+/// `DXGI_ALPHA_MODE_PREMULTIPLIED`, and the PCI vendor whose windows take it (Rune's refresh guard).
+const PREMULTIPLIED: i64 = 1;
+const NVIDIA: u64 = 0x10DE;
 
 /// One window, in a process of its own.
 pub struct Case {
@@ -174,6 +177,19 @@ fn check(phase: &Phase, r: &Value) -> Vec<Check> {
     let producer = &r["producer"];
     add("D3D11 producer pushed and Rune released (shared fences)", producer["release_fence_completed"].as_u64().unwrap_or(0) >= 1 && producer["error"].is_null(),
         format!("pushed {}, release fence at {}, adapter {}", producer["frames_pushed"], producer["release_fence_completed"], producer["adapter"]));
+    // An opaque window on NVIDIA composites premultiplied, so G-SYNC leaves the display's refresh
+    // rate fixed, whether the GPU drew it from its first frame or the CPU handed it over.
+    let vendor = producer["vendor_id"].as_u64().unwrap_or(0);
+    let alpha_mode = sc["alpha_mode"].as_i64().unwrap_or(-1);
+    let guarded = vendor == NVIDIA;
+    add(if guarded { "swap chain is DXGI_ALPHA_MODE_PREMULTIPLIED (NVIDIA: G-SYNC stays off)" } else { "swap chain isn't premultiplied (no refresh guard off NVIDIA)" },
+        (alpha_mode == PREMULTIPLIED) == guarded, format!("alpha mode {alpha_mode}, adapter vendor {vendor:#x}"));
+    // Nothing behind the window shows through: every pixel read is opaque.
+    let regions = r["regions"].as_object().into_iter().flatten();
+    let translucent: Vec<String> = regions.filter(|(_, v)| !near(v["mean_rgba"][3].as_f64().unwrap_or(f64::NAN), 1.0, 1e-3))
+        .map(|(name, v)| format!("{name} {}", v["mean_rgba"][3])).collect();
+    add("every region's pixels are opaque (alpha 1.0)", translucent.is_empty() && r["regions"].as_object().is_some_and(|m| !m.is_empty()),
+        if translucent.is_empty() { format!("{} regions", r["regions"].as_object().map_or(0, |m| m.len())) } else { translucent.join(", ") });
     if !phase.hdr {
         add("SDR fallback: 8-bit BGRA swap chain in sRGB", format == BGRA8 && back == BGRA8 && space == SRGB,
             format!("swap chain {} ({}), back buffer {back}, colour space {space}", format, sc["dxgi_format_name"]));
